@@ -2,7 +2,7 @@
 """
 ZAP-Hosting Lifetime VPS 保活脚本
 
-cron: 0 8 1 * *
+cron: 0 8 * * 1
 new Env('zap-renew')
 
 功能:

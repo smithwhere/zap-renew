@@ -25,7 +25,7 @@
 账号、密码和 API 密钥仅保存到 Secrets，不要提交到公开仓库。
 工作流直接将 Secrets 传入进程环境，不生成包含凭据的文件，也不缓存登录会话。
 在 Actions 中启用工作流后，选择 **ZAP Renew → Run workflow** 可手动运行。
-定时任务保持每月 1 日北京时间 11:00；首次登录及验证码解决需要实际运行验证。
+定时任务为每周一北京时间 08:00；首次登录及验证码解决需要实际运行验证。
 当前工作流使用 Classic Panel (`legacy.zap-hosting.com`)，登录成功后等待 30 秒，
 访问指定 VPS 详情页、停留 10 秒并刷新。Cookie 提示出现时自动选择 **Accept all**。
 成功与失败结果均通过 QQ SMTP SSL (465) 发邮件。
@@ -41,7 +41,7 @@
 - **名称**: zap-renew
 - **链接**: `https://github.com/smithwhere/zap-renew.git`
 - **分支**: main
-- **定时规则**: `0 8 * * *`
+- **定时规则**: `0 8 * * 1` (面板时区设为 Asia/Shanghai)
 
 ### 2. 配置环境变量
 
@@ -76,8 +76,8 @@ apt-get update && apt-get install -y xvfb xauth
 
 ### 5. 定时任务
 
-建议每月执行一次:
-- 定时规则: `0 8 1 * *` (每月1号 8:00)
+每周一早上执行一次（面板时区设为 Asia/Shanghai）:
+- 定时规则: `0 8 * * 1` (每周一 08:00)
 
 ## 手动运行
 
