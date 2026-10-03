@@ -20,6 +20,14 @@ jobs:
       ZAP_ACCOUNT: ${{ secrets.ZAP_ACCOUNT || secrets.ACCOUNTS_ZAP || secrets.ACCOUNTS }}
       YESCAPTCHA_API_KEY: ${{ secrets.YESCAPTCHA_API_KEY }}
       STAY_DURATION: '10'
+      LOGIN_WAIT_DURATION: '30'
+      ZAP_BASE_URL: 'https://legacy.zap-hosting.com'
+      ZAP_VPS_URL: 'https://legacy.zap-hosting.com/en/customer/vserver/show/623379/overview/'
+      SMTP_HOST: 'smtp.qq.com'
+      SMTP_PORT: '465'
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      SMTP_TO: ${{ secrets.SMTP_TO }}
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +36,10 @@ jobs:
         run: |
           if [ -z "$ZAP_ACCOUNT" ] || [ -z "$YESCAPTCHA_API_KEY" ]; then
             echo '请在 Repository secrets 中配置 ZAP_ACCOUNT 和 YESCAPTCHA_API_KEY'
+            exit 1
+          fi
+          if [ -z "$SMTP_USERNAME" ] || [ -z "$SMTP_PASSWORD" ] || [ -z "$SMTP_TO" ]; then
+            echo '请配置邮件通知所需的 SMTP_USERNAME、SMTP_PASSWORD、SMTP_TO secrets'
             exit 1
           fi
       

@@ -24,6 +24,10 @@ import asyncio
 import json
 import time
 import requests
+import smtplib
+import ssl
+from email.message import EmailMessage
+from urllib.parse import urlparse
 from pathlib import Path
 from datetime import datetime
 from playwright.async_api import async_playwright
@@ -37,11 +41,62 @@ ACCOUNTS_STR = (os.environ.get('ZAP_ACCOUNT') or
                 os.environ.get('ACCOUNTS_ZAP') or
                 os.environ.get('ACCOUNTS', ''))
 STAY_DURATION = int(os.environ.get('STAY_DURATION', '10'))
+LOGIN_WAIT_DURATION = int(os.environ.get('LOGIN_WAIT_DURATION', '30'))
 
-LOGIN_URL = "https://zap-hosting.com/en/#login"
-DASHBOARD_URL = "https://zap-hosting.com/en/customer/home/"
+BASE_URL = os.environ.get('ZAP_BASE_URL', 'https://legacy.zap-hosting.com').rstrip('/')
+LOGIN_URL = f"{BASE_URL}/interface/login/"
+DASHBOARD_URL = f"{BASE_URL}/en/customer/home/"
+VPS_URL = os.environ.get('ZAP_VPS_URL', '')
 SESSION_DIR = Path(__file__).parent / "sessions"
 RECAPTCHA_SITEKEY = "6Lc8WwosAAAAABY42gdwB6ShcYBPW_YHTQeIhjav"
+
+
+def is_customer_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return (parsed.scheme == 'https' and parsed.netloc == urlparse(BASE_URL).netloc
+            and parsed.path.startswith('/en/customer/'))
+
+
+def is_vps_detail_url(url: str) -> bool:
+    if not is_customer_url(url):
+        return False
+    path = urlparse(url).path
+    if VPS_URL:
+        target = urlparse(VPS_URL)
+        return (urlparse(url).netloc == target.netloc and
+                path.rstrip('/') == target.path.rstrip('/'))
+    return '/vserver/show/' in path or '/vserver/id/' in path
+
+
+def send_email(title: str, content: str) -> bool:
+    username = os.environ.get('SMTP_USERNAME', '')
+    password = os.environ.get('SMTP_PASSWORD', '')
+    recipient = os.environ.get('SMTP_TO', '')
+    if not any((username, password, recipient)):
+        return True  # 邮件通知为可选功能。
+    if not all((username, password, recipient)):
+        Logger.log('邮件', 'SMTP_USERNAME、SMTP_PASSWORD、SMTP_TO 配置不完整', 'ERROR')
+        return False
+    message = EmailMessage()
+    message['Subject'] = title
+    message['From'] = username
+    message['To'] = recipient
+    message.set_content(content)
+    try:
+        with smtplib.SMTP_SSL(
+            os.environ.get('SMTP_HOST', 'smtp.qq.com'),
+            int(os.environ.get('SMTP_PORT', '465')),
+            context=ssl.create_default_context(), timeout=30,
+        ) as smtp:
+            smtp.login(username, password)
+            refused = smtp.send_message(message)
+            if refused:
+                raise smtplib.SMTPRecipientsRefused(refused)
+        Logger.log('邮件', '通知已被邮件服务器接受', 'OK')
+        return True
+    except (OSError, smtplib.SMTPException, ValueError) as error:
+        Logger.log('邮件', f'发送失败: {type(error).__name__}', 'ERROR')
+        return False
 
 
 def parse_accounts(accounts_str: str) -> list:
@@ -158,7 +213,17 @@ class ZapKeepAlive:
             await asyncio.sleep(2)
         return False
     
+    async def accept_cookies(self):
+        try:
+            button = self.page.get_by_role('button', name='Accept all', exact=True)
+            if await button.is_visible():
+                await button.click(timeout=5000)
+                Logger.log('Cookies', '已选择 Accept all', 'OK')
+        except Exception as error:
+            Logger.log('Cookies', f'处理 Cookie 提示失败: {type(error).__name__}', 'WARN')
+
     async def close_modals(self):
+        await self.accept_cookies()
         try:
             dont_show = await self.page.query_selector('button:has-text("Don\'t show again")')
             if dont_show and await dont_show.is_visible():
@@ -190,28 +255,17 @@ class ZapKeepAlive:
         Logger.log("登录", "Cloudflare 验证通过!", "OK")
         await asyncio.sleep(2)
         
-        try:
-            btn = await self.page.query_selector('button:has-text("Accept all")')
-            if btn:
-                await btn.click()
-                Logger.log("登录", "已接受 cookies", "OK")
-        except:
-            pass
+        await self.accept_cookies()
         await asyncio.sleep(1)
         
         Logger.log("登录", "打开登录对话框...")
         login_link = await self.page.query_selector('text="Log in!"') or \
                      await self.page.query_selector('text="Already registered"') or \
                      await self.page.query_selector('a:has-text("Log in")')
-        if login_link:
+        inline_form = self.page.locator('form.inline-login')
+        if login_link and not await inline_form.is_visible():
             await login_link.click()
             Logger.log("登录", "已点击登录链接", "OK")
-        
-        # 新版顶部登录栏需先展开邮箱登录，输入框存在不代表可以操作。
-        email_trigger = self.page.locator('#hlbEmailTrigger')
-        if await email_trigger.is_visible():
-            await email_trigger.click(timeout=10000)
-            Logger.log("登录", "已展开邮箱登录表单", "OK")
         
         await asyncio.sleep(2)  # 等待对话框加载
         
@@ -219,7 +273,11 @@ class ZapKeepAlive:
         
         # 查找用户名输入框
         email_input = None
-        for selector in ['#headerLoginForm #hlbUsername', 'input[placeholder*="E-Mail"]', 'input[placeholder*="e-mail"]',
+        # 首页登录链接展开的是首页表单；顶部栏在折叠时仍可能被判定为 visible。
+        for selector in ['form.inline-login input[autocomplete="username"]',
+                         '#post-8036 form input[name="username"]', '#recaptcha-login-name',
+                         '.modal input[name="username"]', '#hlbUsername',
+                         'input[placeholder*="E-Mail"]', 'input[placeholder*="e-mail"]',
                          'input[placeholder*="Username"]', '.modal input[type="text"]']:
             email_input = await self.page.query_selector(selector)
             if email_input and await email_input.is_visible():
@@ -235,10 +293,7 @@ class ZapKeepAlive:
                         email_input = inp
                         break
         
-        if email_input:
-            await email_input.fill(self.email)
-            Logger.log("登录", f"用户名: {self.email}", "OK")
-        else:
+        if not email_input:
             Logger.log("登录", "找不到用户名输入框", "ERROR")
             return False
         
@@ -250,6 +305,14 @@ class ZapKeepAlive:
         if not login_form:
             Logger.log("登录", "找不到登录表单", "ERROR")
             return False
+        if await login_form.get_attribute('id') == 'headerLoginForm':
+            await login_form.hover()
+            email_trigger = self.page.locator('#hlbEmailTrigger')
+            if await email_trigger.is_visible():
+                await email_trigger.click(timeout=10000)
+                Logger.log("登录", "已展开邮箱登录表单", "OK")
+        await email_input.fill(self.email)
+        Logger.log("登录", f"用户名: {self.email}", "OK")
         all_passwords = await login_form.query_selector_all('input[type="password"]')
         for pwd in all_passwords:
             if await pwd.is_visible():
@@ -268,7 +331,7 @@ class ZapKeepAlive:
             Logger.log("登录", "等待 reCAPTCHA 结果...", "WAIT")
             try:
                 recaptcha_token = await asyncio.to_thread(
-                    self.solver.solve, RECAPTCHA_SITEKEY, LOGIN_URL
+                    self.solver.solve, RECAPTCHA_SITEKEY, self.page.url
                 )
                 Logger.log("登录", "reCAPTCHA 已解决", "OK")
                 
@@ -276,19 +339,29 @@ class ZapKeepAlive:
                 await self.page.evaluate('''
                     (token) => {
                         const textareas = document.querySelectorAll('textarea[name="g-recaptcha-response"]');
-                        textareas.forEach(ta => { ta.style.display = 'block'; ta.value = token; });
+                        textareas.forEach(ta => {
+                            ta.value = token;
+                            ta.dispatchEvent(new Event('input', {bubbles: true}));
+                            ta.dispatchEvent(new Event('change', {bubbles: true}));
+                        });
                         
                         if (typeof ___grecaptcha_cfg !== 'undefined') {
                             const clients = ___grecaptcha_cfg.clients;
-                            for (const key in clients) {
-                                const client = clients[key];
-                                for (const prop in client) {
-                                    const val = client[prop];
-                                    if (val && typeof val === 'object' && val.callback) {
-                                        try { val.callback(token); } catch(e) {}
+                            const visited = new WeakSet();
+                            const applyToken = (object, depth) => {
+                                if (!object || typeof object !== 'object' || depth > 8 ||
+                                    visited.has(object) || object instanceof Element) return;
+                                visited.add(object);
+                                for (const key of Object.keys(object)) {
+                                    const value = object[key];
+                                    if (key === 'callback' && typeof value === 'function') {
+                                        try { value.call(object, token); } catch(e) {}
+                                    } else if (value && typeof value === 'object') {
+                                        applyToken(value, depth + 1);
                                     }
                                 }
-                            }
+                            };
+                            applyToken(clients, 0);
                         }
                         return true;
                     }
@@ -303,11 +376,10 @@ class ZapKeepAlive:
         # 立即点击登录按钮
         Logger.log("登录", "点击 Login 按钮...")
         login_btn = None
-        for selector in ['#headerLoginForm button[type="submit"]', '.modal button:has-text("Login")', '.modal button:has-text("Log in")',
-                         'button:has-text("Login")', 'button:has-text("Log in")', 
-                         '.modal button[type="submit"]']:
+        for selector in ['button[type="submit"]', 'button:has-text("Login")',
+                         'button:has-text("Log in")', 'input[type="submit"]']:
             try:
-                btn = await self.page.query_selector(selector)
+                btn = await login_form.query_selector(selector)
                 if btn and await btn.is_visible():
                     login_btn = btn
                     break
@@ -343,7 +415,7 @@ class ZapKeepAlive:
             await self.close_modals()
             
             url = self.page.url
-            if 'customer' in url:
+            if is_customer_url(url):
                 Logger.log("登录", "登录成功!", "OK")
                 return True
             
@@ -357,7 +429,7 @@ class ZapKeepAlive:
                 pass
         
         url = self.page.url
-        if 'customer' in url:
+        if is_customer_url(url):
             Logger.log("登录", "登录成功!", "OK")
             return True
         
@@ -371,6 +443,13 @@ class ZapKeepAlive:
         return False
     
     async def visit_vps_detail(self) -> bool:
+        if VPS_URL:
+            Logger.log('VPS', '访问指定 VPS 详情页...', 'WAIT')
+            await self.page.goto(VPS_URL, wait_until='domcontentloaded')
+            if not await self.handle_cloudflare():
+                return False
+            await self.close_modals()
+            return is_vps_detail_url(self.page.url)
         Logger.log("VPS", "访问 Dashboard...", "WAIT")
         await self.page.goto(DASHBOARD_URL, wait_until='domcontentloaded')
         await asyncio.sleep(3)
@@ -436,7 +515,7 @@ class ZapKeepAlive:
         except:
             pass
         
-        return 'vserver' in current_url
+        return is_vps_detail_url(current_url)
     
     async def stay_and_refresh(self):
         Logger.log("保活", f"在 VPS 详情页停留 {STAY_DURATION} 秒...", "WAIT")
@@ -449,9 +528,14 @@ class ZapKeepAlive:
         Logger.log("保活", "刷新页面 (F5)...", "WAIT")
         await self.page.reload()
         await asyncio.sleep(5)
-        await self.handle_cloudflare(10)
+        if not await self.handle_cloudflare(10):
+            return False
         await asyncio.sleep(2)
+        if not is_vps_detail_url(self.page.url):
+            Logger.log('保活', '刷新后未停留在 VPS 详情页', 'ERROR')
+            return False
         Logger.log("保活", "页面已刷新", "OK")
+        return True
     
     async def save_session(self):
         cookies = await self.context.cookies()
@@ -503,7 +587,7 @@ class ZapKeepAlive:
             await asyncio.sleep(2)
             
             current_url = self.page.url
-            need_login = 'login' in current_url.lower() or '#login' in current_url or 'customer' not in current_url
+            need_login = not is_customer_url(current_url)
             
             if need_login:
                 Logger.log("检查", "需要登录", "WARN")
@@ -513,13 +597,18 @@ class ZapKeepAlive:
                     return False
             else:
                 Logger.log("检查", "会话有效，已登录", "OK")
+
+            Logger.log('登录', f'登录成功后等待 {LOGIN_WAIT_DURATION} 秒...', 'WAIT')
+            await asyncio.sleep(LOGIN_WAIT_DURATION)
             
             if not await self.visit_vps_detail():
                 Logger.log("结果", "访问 VPS 详情页失败", "ERROR")
                 await self.browser.close()
                 return False
             
-            await self.stay_and_refresh()
+            if not await self.stay_and_refresh():
+                await self.browser.close()
+                return False
             await self.save_session()
             
             Logger.log("结果", f"{self.email} 保活完成!", "OK")
@@ -555,7 +644,14 @@ async def main():
     for i, account in enumerate(accounts, 1):
         print(f"\n[进度] 处理账号 {i}/{len(accounts)}")
         keeper = ZapKeepAlive(account['email'], account['password'])
-        success = await keeper.run()
+        try:
+            success = await keeper.run()
+        except Exception as error:
+            Logger.log('结果', f'账号运行失败: {type(error).__name__}: {error}', 'ERROR')
+            success = False
+        finally:
+            if keeper.browser and keeper.browser.is_connected():
+                await keeper.browser.close()
         results.append({'email': account['email'], 'success': success})
     
     print()
@@ -594,8 +690,9 @@ async def main():
     
     message = "\n".join(msg_lines)
     notify_send(notify_title, message)
+    mail_sent = await asyncio.to_thread(send_email, notify_title, message)
     
-    return success_count == len(results)
+    return success_count == len(results) and mail_sent
 
 
 if __name__ == '__main__':

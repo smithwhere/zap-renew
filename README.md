@@ -18,11 +18,18 @@
 |-------------|------|
 | `ZAP_ACCOUNT` | `邮箱:密码`，多账号用逗号分隔 |
 | `YESCAPTCHA_API_KEY` | YesCaptcha API 密钥 |
+| `SMTP_USERNAME` | QQ 发件邮箱 |
+| `SMTP_PASSWORD` | QQ 邮箱 SMTP 服务授权码 |
+| `SMTP_TO` | 通知收件邮箱 |
 
 账号、密码和 API 密钥仅保存到 Secrets，不要提交到公开仓库。
 工作流直接将 Secrets 传入进程环境，不生成包含凭据的文件，也不缓存登录会话。
 在 Actions 中启用工作流后，选择 **ZAP Renew → Run workflow** 可手动运行。
 定时任务保持每月 1 日北京时间 11:00；首次登录及验证码解决需要实际运行验证。
+当前工作流使用 Classic Panel (`legacy.zap-hosting.com`)，登录成功后等待 30 秒，
+访问指定 VPS 详情页、停留 10 秒并刷新。Cookie 提示出现时自动选择 **Accept all**。
+成功与失败结果均通过 QQ SMTP SSL (465) 发邮件。
+邮件显示“服务器接受”表示 SMTP 已接受投递，最终到达收件箱由邮件服务商处理。
 保活成功表示已访问并刷新 VPS 页面，不保证服务商已延长 Lifetime VPS 有效期。
 
 ## 青龙面板使用
