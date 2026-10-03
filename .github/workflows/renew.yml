@@ -43,5 +43,5 @@ jobs:
           sudo apt-get install -y xvfb xauth
       
       - name: Run renew script
-        run: xvfb-run python zap-renew.py
+        run: xvfb-run python -u zap-renew.py
         timeout-minutes: 15

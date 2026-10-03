@@ -207,14 +207,11 @@ class ZapKeepAlive:
             await login_link.click()
             Logger.log("登录", "已点击登录链接", "OK")
         
-        # 点击后 reCAPTCHA 开始加载，立即开始解决
-        recaptcha_task = None
-        if self.solver:
-            Logger.log("登录", "开始解决 reCAPTCHA (异步)...", "WAIT")
-            # 异步创建任务
-            import concurrent.futures
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            recaptcha_task = executor.submit(self.solver.solve, RECAPTCHA_SITEKEY, LOGIN_URL)
+        # 新版顶部登录栏需先展开邮箱登录，输入框存在不代表可以操作。
+        email_trigger = self.page.locator('#hlbEmailTrigger')
+        if await email_trigger.is_visible():
+            await email_trigger.click(timeout=10000)
+            Logger.log("登录", "已展开邮箱登录表单", "OK")
         
         await asyncio.sleep(2)  # 等待对话框加载
         
@@ -222,7 +219,7 @@ class ZapKeepAlive:
         
         # 查找用户名输入框
         email_input = None
-        for selector in ['input[placeholder*="E-Mail"]', 'input[placeholder*="e-mail"]', 
+        for selector in ['#headerLoginForm #hlbUsername', 'input[placeholder*="E-Mail"]', 'input[placeholder*="e-mail"]',
                          'input[placeholder*="Username"]', '.modal input[type="text"]']:
             email_input = await self.page.query_selector(selector)
             if email_input and await email_input.is_visible():
@@ -239,7 +236,6 @@ class ZapKeepAlive:
                         break
         
         if email_input:
-            await email_input.click()
             await email_input.fill(self.email)
             Logger.log("登录", f"用户名: {self.email}", "OK")
         else:
@@ -248,14 +244,19 @@ class ZapKeepAlive:
         
         # 查找密码输入框
         password_input = None
-        all_passwords = await self.page.query_selector_all('input[type="password"]')
+        # 密码与邮箱必须来自同一个表单，避免命中页面上其他登录/注册框。
+        form_handle = await email_input.evaluate_handle('(input) => input.closest("form")')
+        login_form = form_handle.as_element()
+        if not login_form:
+            Logger.log("登录", "找不到登录表单", "ERROR")
+            return False
+        all_passwords = await login_form.query_selector_all('input[type="password"]')
         for pwd in all_passwords:
             if await pwd.is_visible():
                 password_input = pwd
                 break
         
         if password_input:
-            await password_input.click()
             await password_input.fill(self.password)
             Logger.log("登录", "密码: ********", "OK")
         else:
@@ -263,10 +264,12 @@ class ZapKeepAlive:
             return False
         
         # 等待 reCAPTCHA 结果并注入
-        if recaptcha_task:
+        if self.solver:
             Logger.log("登录", "等待 reCAPTCHA 结果...", "WAIT")
             try:
-                recaptcha_token = recaptcha_task.result(timeout=120)
+                recaptcha_token = await asyncio.to_thread(
+                    self.solver.solve, RECAPTCHA_SITEKEY, LOGIN_URL
+                )
                 Logger.log("登录", "reCAPTCHA 已解决", "OK")
                 
                 # 注入 token
@@ -300,7 +303,7 @@ class ZapKeepAlive:
         # 立即点击登录按钮
         Logger.log("登录", "点击 Login 按钮...")
         login_btn = None
-        for selector in ['.modal button:has-text("Login")', '.modal button:has-text("Log in")', 
+        for selector in ['#headerLoginForm button[type="submit"]', '.modal button:has-text("Login")', '.modal button:has-text("Log in")',
                          'button:has-text("Login")', 'button:has-text("Log in")', 
                          '.modal button[type="submit"]']:
             try:
