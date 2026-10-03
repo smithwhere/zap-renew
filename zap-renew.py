@@ -189,13 +189,16 @@ class ZapKeepAlive:
         self.cdp = None
     
     async def handle_cloudflare(self, max_attempts: int = 20) -> bool:
+        last_state = '页面尚未加载'
         for attempt in range(max_attempts):
             try:
                 await self.page.wait_for_load_state('domcontentloaded', timeout=5000)
                 title = await self.page.title()
-                if "Just a moment" not in title:
+                last_state = f'页面标题: {title[:100]}'
+                if title.strip() and "just a moment" not in title.lower():
                     return True
-            except:
+            except Exception as error:
+                last_state = f'页面检查异常: {type(error).__name__}'
                 await asyncio.sleep(1)
                 continue
             wrapper = await self.page.query_selector('.main-wrapper')
@@ -211,6 +214,11 @@ class ZapKeepAlive:
                         'type': 'mouseReleased', 'x': x, 'y': y, 'button': 'left', 'clickCount': 1
                     })
             await asyncio.sleep(2)
+        # 验证页仍保留目标 URL，不能将它当成登录或访问成功。
+        parsed = urlparse(self.page.url)
+        safe_url = parsed._replace(query='', fragment='').geturl()
+        Logger.log('Cloudflare', f'验证超时 ({max_attempts} 次检查); '
+                   f'{last_state}; URL: {safe_url}', 'ERROR')
         return False
     
     async def accept_cookies(self):
@@ -478,7 +486,8 @@ class ZapKeepAlive:
             Logger.log("VPS", "点击了 My VPS", "OK")
             await asyncio.sleep(3)
         
-        await self.handle_cloudflare(10)
+        if not await self.handle_cloudflare(10):
+            return False
         await asyncio.sleep(2)
         
         Logger.log("VPS", "查找 VPS 详情页...")
@@ -499,7 +508,8 @@ class ZapKeepAlive:
                 break
         
         await asyncio.sleep(3)
-        await self.handle_cloudflare(10)
+        if not await self.handle_cloudflare(10):
+            return False
         await asyncio.sleep(2)
         await self.close_modals()
         
@@ -526,9 +536,10 @@ class ZapKeepAlive:
         Logger.log("保活", "停留完成", "OK")
         
         Logger.log("保活", "刷新页面 (F5)...", "WAIT")
-        await self.page.reload()
+        await self.page.reload(wait_until='domcontentloaded', timeout=60000)
         await asyncio.sleep(5)
         if not await self.handle_cloudflare(10):
+            Logger.log('保活', '刷新后的 Cloudflare 验证未通过', 'ERROR')
             return False
         await asyncio.sleep(2)
         if not is_vps_detail_url(self.page.url):
@@ -582,8 +593,11 @@ class ZapKeepAlive:
             await asyncio.sleep(5)
             
             cf_passed = await self.handle_cloudflare()
-            if cf_passed:
-                Logger.log("检查", "Cloudflare 验证通过", "OK")
+            if not cf_passed:
+                Logger.log('检查', 'Cloudflare 验证未通过，无法确认登录状态，任务终止', 'ERROR')
+                await self.browser.close()
+                return False
+            Logger.log("检查", "Cloudflare 验证通过", "OK")
             await asyncio.sleep(2)
             
             current_url = self.page.url
