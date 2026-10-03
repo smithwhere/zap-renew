@@ -64,7 +64,7 @@ def browser_proxy(proxy_url: str):
     except ValueError:
         raise ValueError('ZAP_PROXY_URL 的端口无效') from None
     if parsed.scheme == 'socks5' and (parsed.username or parsed.password):
-        raise ValueError('CloudFlareTaskS2 不支持带认证的 SOCKS5 代理')
+        raise ValueError('浏览器不支持带认证的 SOCKS5 代理')
     config = {'server': f'{parsed.scheme}://{parsed.netloc.rsplit("@", 1)[-1]}'}
     if parsed.username is not None:
         config['username'] = unquote(parsed.username)
@@ -203,20 +203,6 @@ class YesCaptchaSolver:
             raise RuntimeError('YesCaptcha 未返回 reCAPTCHA token')
         return token
 
-    def solve_cloudflare(self, page_url: str, proxy_url: str, user_agent: str) -> dict:
-        if not proxy_url:
-            raise ValueError('CloudFlareTaskS2 需要 ZAP_PROXY_URL')
-        browser_proxy(proxy_url)  # 提交付费任务前验证代理格式。
-        task_id = self._submit_task({
-            'type': 'CloudFlareTaskS2',
-            'websiteURL': page_url,
-            'proxy': proxy_url,
-            'userAgent': user_agent,
-            'waitLoad': False,
-            'requiredCookies': ['cf_clearance'],
-        })
-        return self._get_solution(task_id)
-    
     def solve(self, site_key: str, page_url: str) -> str:
         Logger.log("验证码", "创建 YesCaptcha 任务...", "WAIT")
         task_id = self.create_task(site_key, page_url)
@@ -286,45 +272,7 @@ class ZapKeepAlive:
             Logger.log('Cloudflare', f'控件定位/点击异常: {type(error).__name__}', 'WARN')
         return False
 
-    async def resolve_cloudflare_with_api(self, max_attempts: int) -> bool:
-        if not PROXY_URL:
-            Logger.log('Cloudflare', 'YesCaptcha CloudFlareTaskS2 需要配置 ZAP_PROXY_URL; '
-                       '浏览器与 API 必须使用同一代理出口，本次不创建 API 任务', 'ERROR')
-            return False
-        try:
-            target_url = self.page.url
-            parsed = urlparse(target_url)
-            if parsed.scheme != 'https':
-                Logger.log('Cloudflare', '验证目标必须使用 HTTPS', 'ERROR')
-                return False
-            user_agent = await self.page.evaluate('navigator.userAgent')
-            Logger.log('Cloudflare', '调用 YesCaptcha CloudFlareTaskS2...', 'WAIT')
-            solution = await asyncio.to_thread(
-                self.solver.solve_cloudflare, target_url, PROXY_URL, user_agent
-            )
-            cookies = solution.get('cookies', {})
-            clearance = cookies.get('cf_clearance') if isinstance(cookies, dict) else None
-            solved_user_agent = solution.get('user_agent') or solution.get('userAgent')
-            if (not isinstance(clearance, str) or not clearance
-                    or not isinstance(solved_user_agent, str) or not solved_user_agent):
-                Logger.log('Cloudflare', 'YesCaptcha 未返回有效 cf_clearance 或 User-Agent', 'ERROR')
-                return False
-            await self.cdp.send('Network.setUserAgentOverride', {'userAgent': solved_user_agent})
-            # 只更新 clearance，保留当前账号的登录会话 Cookie。
-            await self.context.add_cookies([{
-                'name': 'cf_clearance', 'value': clearance,
-                'url': f'{parsed.scheme}://{parsed.netloc}/',
-                'secure': True, 'httpOnly': True,
-            }])
-            Logger.log('Cloudflare', '已应用验证 Cookie 和 User-Agent，重新检查页面', 'WAIT')
-            await self.page.reload(wait_until='domcontentloaded', timeout=60000)
-            # API 返回结果不代表网站已放行；同一次验证最多创建一个付费任务。
-            return await self.handle_cloudflare(max_attempts, use_solver=False)
-        except Exception as error:
-            Logger.log('Cloudflare', f'YesCaptcha 处理失败: {type(error).__name__}', 'ERROR')
-            return False
-
-    async def handle_cloudflare(self, max_attempts: int = 20, *, use_solver: bool = True) -> bool:
+    async def handle_cloudflare(self, max_attempts: int = 20) -> bool:
         last_state = '页面尚未加载'
         last_title = ''
         clicked_nodes = set()
@@ -344,7 +292,7 @@ class ZapKeepAlive:
             if attempt == 0 and not clicked:
                 Logger.log('Cloudflare', '未发现可点击控件，等待页面自动验证', 'WAIT')
             await asyncio.sleep(2)
-        # 最后一次点击/自动验证可能已成功，提交付费任务前重新读取页面状态。
+        # 最后一次点击/自动验证可能已成功，报告超时前重新读取页面状态。
         try:
             await self.page.wait_for_load_state('domcontentloaded', timeout=5000)
             last_title = await self.page.title()
@@ -354,8 +302,6 @@ class ZapKeepAlive:
         except Exception as error:
             last_title = ''
             last_state = f'页面检查异常: {type(error).__name__}'
-        if use_solver and self.solver and 'just a moment' in last_title.lower():
-            return await self.resolve_cloudflare_with_api(max_attempts)
         # 验证页仍保留目标 URL，不能将它当成登录或访问成功。
         parsed = urlparse(self.page.url)
         safe_url = parsed._replace(query='', fragment='').geturl()

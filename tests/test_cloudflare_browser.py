@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 from playwright.async_api import async_playwright
 from test_renew import renew
@@ -77,20 +77,32 @@ class CloudflareBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.page.title(), 'VPS Overview')
         self.assertIsNone(await self.page.get_attribute('body', 'data-unrelated'))
 
-    async def test_last_widget_attempt_succeeds_without_creating_paid_task(self):
+    async def test_last_widget_attempt_is_checked_before_timeout(self):
         await self.load_fixture()
-        solve = Mock()
-        self.keeper.solver = SimpleNamespace(solve_cloudflare=solve)
         with patch.object(renew, 'PROXY_URL', 'http://proxy.example.test:8080'), \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertTrue(await self.keeper.handle_cloudflare(max_attempts=1))
-        solve.assert_not_called()
 
     async def test_missing_widget_never_clicks_an_unrelated_control(self):
         await self.load_fixture(widget=False)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertFalse(await self.keeper.handle_cloudflare(max_attempts=1))
         self.assertIsNone(await self.page.get_attribute('body', 'data-unrelated'))
+
+    async def test_cloudflare_never_calls_yescaptcha_even_with_key_and_proxy(self):
+        await self.load_fixture(widget=False)
+        self.keeper.solver = renew.YesCaptchaSolver('fixture-key')
+        api_urls = []
+
+        def forbid_api(url, **kwargs):
+            api_urls.append(url)
+            raise RuntimeError('Cloudflare must not call a paid solver')
+
+        with patch.object(renew, 'PROXY_URL', 'http://proxy.example.test:8080'), \
+                patch.object(renew.requests, 'post', side_effect=forbid_api), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(await self.keeper.handle_cloudflare(max_attempts=1))
+        self.assertEqual(api_urls, [])
 
     async def test_same_widget_is_not_clicked_again_while_verifying(self):
         await self.load_fixture(resolve=False)
@@ -126,80 +138,6 @@ class CloudflareBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(playwright.__aenter__.return_value.chromium.launch.call_args.kwargs['proxy'],
                          {'server': 'http://proxy.example.test:8080', 'username': 'user', 'password': 'password'})
 
-    async def test_yescaptcha_clearance_and_user_agent_are_used_on_retry(self):
-        calls = []
-        browser_user_agent = await self.page.evaluate('navigator.userAgent')
-
-        def solve_cloudflare(url, proxy, user_agent):
-            calls.append((url, proxy, user_agent))
-            return {'cookies': {'cf_clearance': 'fixture-clearance', 'PHPSESSID': 'solver-session'},
-                    'user_agent': 'FixtureBrowser/1.0'}
-
-        async def route_request(route):
-            headers = await route.request.all_headers()
-            cleared = ('cf_clearance=fixture-clearance' in headers.get('cookie', '')
-                       and 'PHPSESSID=account-session' in headers.get('cookie', '')
-                       and headers.get('user-agent') == 'FixtureBrowser/1.0')
-            await route.fulfill(body='<title>VPS Overview</title>' if cleared
-                                else '<title>Just a moment...</title>', content_type='text/html')
-        await self.context.route('**/*', route_request)
-        await self.context.add_cookies([{'name': 'PHPSESSID', 'value': 'account-session', 'url': PANEL_URL}])
-        await self.page.goto(PANEL_URL)
-        self.keeper.context = self.context
-        self.keeper.solver = SimpleNamespace(solve_cloudflare=solve_cloudflare)
-        with patch.object(renew, 'PROXY_URL', 'http://proxy.example.test:8080', create=True):
-            self.assertTrue(await self.keeper.handle_cloudflare(max_attempts=1))
-        self.assertEqual(await self.page.title(), 'VPS Overview')
-        self.assertEqual(calls, [(PANEL_URL, 'http://proxy.example.test:8080', browser_user_agent)])
-
-    async def test_uncleared_challenge_never_creates_repeated_paid_tasks(self):
-        calls = []
-
-        def solve_cloudflare(url, proxy, user_agent):
-            calls.append(url)
-            return {'cookies': {'cf_clearance': 'fixture-clearance'}, 'user_agent': 'FixtureBrowser/1.0'}
-
-        await self.load_fixture(widget=False)
-        self.keeper.context = self.context
-        self.keeper.solver = SimpleNamespace(solve_cloudflare=solve_cloudflare)
-        with patch.object(renew, 'PROXY_URL', 'http://proxy.example.test:8080', create=True), \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.assertFalse(await self.keeper.handle_cloudflare(max_attempts=1))
-        self.assertEqual(calls, [PANEL_URL])
-
-    async def test_missing_proxy_does_not_submit_an_api_task(self):
-        await self.load_fixture(widget=False)
-        solve = Mock()
-        self.keeper.solver = SimpleNamespace(solve_cloudflare=solve)
-        with patch.object(renew, 'PROXY_URL', ''), contextlib.redirect_stdout(io.StringIO()):
-            self.assertFalse(await self.keeper.resolve_cloudflare_with_api(1))
-        solve.assert_not_called()
-
-    async def test_api_error_does_not_expose_credentials_or_report_success(self):
-        await self.load_fixture(widget=False)
-
-        def fail(*args):
-            raise RuntimeError('fixture-private-key http://user:private-password@proxy.example.test:8080')
-
-        self.keeper.solver = SimpleNamespace(solve_cloudflare=fail)
-        output = io.StringIO()
-        with patch.object(renew, 'PROXY_URL', 'http://proxy.example.test:8080'), \
-                contextlib.redirect_stdout(output):
-            self.assertFalse(await self.keeper.resolve_cloudflare_with_api(1))
-        self.assertNotIn('fixture-private-key', output.getvalue())
-        self.assertNotIn('private-password', output.getvalue())
-        self.assertEqual(await self.page.title(), 'Just a moment...')
-
-    async def test_incomplete_solution_is_rejected_without_applying_cookies(self):
-        await self.load_fixture(widget=False)
-        self.keeper.context = self.context
-        self.keeper.solver = SimpleNamespace(solve_cloudflare=lambda *args: {
-            'cookies': {'cf_clearance': 'fixture-clearance'},
-        })
-        with patch.object(renew, 'PROXY_URL', 'http://proxy.example.test:8080'), \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.assertFalse(await self.keeper.resolve_cloudflare_with_api(1))
-        self.assertEqual(await self.context.cookies(), [])
 
 
 if __name__ == '__main__':
