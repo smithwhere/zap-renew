@@ -32,7 +32,10 @@ from playwright.async_api import async_playwright
 YESCAPTCHA_API_KEY = os.environ.get('YESCAPTCHA_API_KEY', '')
 YESCAPTCHA_API_URL = "https://api.yescaptcha.com"
 
-ACCOUNTS_STR = os.environ.get('ZAP_ACCOUNT', '')
+# 兼容旧版文档和工作流使用的变量名，优先使用 ZAP_ACCOUNT。
+ACCOUNTS_STR = (os.environ.get('ZAP_ACCOUNT') or
+                os.environ.get('ACCOUNTS_ZAP') or
+                os.environ.get('ACCOUNTS', ''))
 STAY_DURATION = int(os.environ.get('STAY_DURATION', '10'))
 
 LOGIN_URL = "https://zap-hosting.com/en/#login"

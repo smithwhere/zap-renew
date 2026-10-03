@@ -5,11 +5,31 @@ on:
     - cron: '0 3 1 * *'  # 每月一号 UTC 3:00 (北京时间 11:00)
   workflow_dispatch:  # 手动触发
 
+permissions:
+  contents: read
+
+concurrency:
+  group: zap-renew
+  cancel-in-progress: false
+
 jobs:
   renew:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ZAP_ACCOUNT: ${{ secrets.ZAP_ACCOUNT || secrets.ACCOUNTS_ZAP || secrets.ACCOUNTS }}
+      YESCAPTCHA_API_KEY: ${{ secrets.YESCAPTCHA_API_KEY }}
+      STAY_DURATION: '10'
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          if [ -z "$ZAP_ACCOUNT" ] || [ -z "$YESCAPTCHA_API_KEY" ]; then
+            echo '请在 Repository secrets 中配置 ZAP_ACCOUNT 和 YESCAPTCHA_API_KEY'
+            exit 1
+          fi
       
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -18,27 +38,9 @@ jobs:
       
       - name: Install dependencies
         run: |
-          pip install playwright requests
-          playwright install chromium
-          playwright install-deps chromium
-      
-      - name: Create .env
-        run: |
-          cat > .env << EOF
-          YESCAPTCHA_API_KEY=${{ secrets.YESCAPTCHA_API_KEY }}
-          ACCOUNTS=${{ secrets.ACCOUNTS }}
-          STAY_DURATION=10
-          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
-          EOF
-      
-      - name: Restore sessions
-        uses: actions/cache@v4
-        with:
-          path: sessions
-          key: zap-sessions-${{ github.run_id }}
-          restore-keys: |
-            zap-sessions-
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+          sudo apt-get install -y xvfb xauth
       
       - name: Run renew script
         run: xvfb-run python zap-renew.py
