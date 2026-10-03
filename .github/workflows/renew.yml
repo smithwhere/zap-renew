@@ -3,10 +3,12 @@ name: ZAP Renew
 on:
   schedule:
     - cron: '0 0 * * 1'  # 每周一 UTC 00:00 (北京时间 08:00)
+    - cron: '0 0 * * 3'  # 每周三北京时间 08:00，周一漏跑或失败时补跑
   workflow_dispatch:  # 手动触发
 
 permissions:
   contents: read
+  actions: read  # 只读查询本工作流的定时运行记录
 
 concurrency:
   group: zap-renew
@@ -32,7 +34,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check weekly schedule
+        id: schedule_check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check_weekly_schedule.py
+
       - name: Validate configuration
+        if: steps.schedule_check.outputs.should_run == 'true'
         shell: bash
         run: |
           if [ -z "$ZAP_ACCOUNT" ] || [ -z "$YESCAPTCHA_API_KEY" ]; then
@@ -44,17 +58,14 @@ jobs:
             exit 1
           fi
       
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      
       - name: Install dependencies
+        if: steps.schedule_check.outputs.should_run == 'true'
         run: |
           pip install -r requirements.txt
           playwright install --with-deps chromium
           sudo apt-get install -y xvfb xauth
       
       - name: Run renew script
+        if: steps.schedule_check.outputs.should_run == 'true'
         run: xvfb-run python -u zap-renew.py
         timeout-minutes: 15
