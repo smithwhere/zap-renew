@@ -27,7 +27,7 @@ import requests
 import smtplib
 import ssl
 from email.message import EmailMessage
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from pathlib import Path
 from datetime import datetime
 from playwright.async_api import async_playwright
@@ -47,8 +47,29 @@ BASE_URL = os.environ.get('ZAP_BASE_URL', 'https://legacy.zap-hosting.com').rstr
 LOGIN_URL = f"{BASE_URL}/interface/login/"
 DASHBOARD_URL = f"{BASE_URL}/en/customer/home/"
 VPS_URL = os.environ.get('ZAP_VPS_URL', '')
+PROXY_URL = os.environ.get('ZAP_PROXY_URL', '').strip()
 SESSION_DIR = Path(__file__).parent / "sessions"
 RECAPTCHA_SITEKEY = "6Lc8WwosAAAAABY42gdwB6ShcYBPW_YHTQeIhjav"
+
+
+def browser_proxy(proxy_url: str):
+    if not proxy_url:
+        return None
+    parsed = urlparse(proxy_url)
+    if (parsed.scheme not in ('http', 'https', 'socks5') or not parsed.hostname
+            or parsed.path not in ('', '/') or parsed.query or parsed.fragment):
+        raise ValueError('ZAP_PROXY_URL 必须是 HTTP/HTTPS 或无密码 SOCKS5 代理地址')
+    try:
+        parsed.port  # 检查端口格式；错误信息不包含凭据。
+    except ValueError:
+        raise ValueError('ZAP_PROXY_URL 的端口无效') from None
+    if parsed.scheme == 'socks5' and (parsed.username or parsed.password):
+        raise ValueError('CloudFlareTaskS2 不支持带认证的 SOCKS5 代理')
+    config = {'server': f'{parsed.scheme}://{parsed.netloc.rsplit("@", 1)[-1]}'}
+    if parsed.username is not None:
+        config['username'] = unquote(parsed.username)
+        config['password'] = unquote(parsed.password or '')
+    return config
 
 
 def is_customer_url(url: str) -> bool:
@@ -138,34 +159,63 @@ class YesCaptchaSolver:
         self.api_key = api_key
         self.base_url = YESCAPTCHA_API_URL
     
-    def create_task(self, site_key: str, page_url: str) -> str:
-        payload = {
-            "clientKey": self.api_key,
-            "task": {
-                "type": "NoCaptchaTaskProxyless",
-                "websiteURL": page_url,
-                "websiteKey": site_key,
-                "softID": "26129",
-            }
-        }
+    def _submit_task(self, task: dict) -> str:
+        payload = {'clientKey': self.api_key, 'task': task}
         response = requests.post(f"{self.base_url}/createTask", json=payload, timeout=30)
+        response.raise_for_status()
         result = response.json()
-        if result.get("errorId") == 0:
-            return result.get("taskId")
-        raise Exception(f"YesCaptcha 创建任务失败: {result.get('errorDescription')}")
+        if result.get('errorId') != 0:
+            # 不回显 errorDescription，它可能包含请求参数或代理凭据。
+            raise RuntimeError(f"YesCaptcha 创建任务失败: {result.get('errorCode', 'API_ERROR')}")
+        task_id = result.get('taskId')
+        if not task_id:
+            raise RuntimeError('YesCaptcha 未返回任务 ID')
+        return task_id
+
+    def create_task(self, site_key: str, page_url: str) -> str:
+        return self._submit_task({
+            "type": "NoCaptchaTaskProxyless",
+            "websiteURL": page_url,
+            "websiteKey": site_key,
+            "softID": "26129",
+        })
     
-    def get_result(self, task_id: str, max_wait: int = 120) -> str:
+    def _get_solution(self, task_id: str, max_wait: int = 120) -> dict:
         payload = {"clientKey": self.api_key, "taskId": task_id}
-        start_time = time.time()
-        while time.time() - start_time < max_wait:
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < max_wait:
             response = requests.post(f"{self.base_url}/getTaskResult", json=payload, timeout=30)
+            response.raise_for_status()
             result = response.json()
             if result.get("errorId") != 0:
-                raise Exception(f"YesCaptcha 错误: {result.get('errorDescription')}")
+                raise RuntimeError(f"YesCaptcha 任务失败: {result.get('errorCode', 'API_ERROR')}")
             if result.get("status") == "ready":
-                return result.get("solution", {}).get("gRecaptchaResponse")
+                solution = result.get('solution')
+                if not isinstance(solution, dict):
+                    raise RuntimeError('YesCaptcha 未返回有效 solution')
+                return solution
             time.sleep(3)
-        raise Exception("YesCaptcha 超时")
+        raise RuntimeError("YesCaptcha 超时")
+
+    def get_result(self, task_id: str, max_wait: int = 120) -> str:
+        token = self._get_solution(task_id, max_wait).get('gRecaptchaResponse')
+        if not token:
+            raise RuntimeError('YesCaptcha 未返回 reCAPTCHA token')
+        return token
+
+    def solve_cloudflare(self, page_url: str, proxy_url: str, user_agent: str) -> dict:
+        if not proxy_url:
+            raise ValueError('CloudFlareTaskS2 需要 ZAP_PROXY_URL')
+        browser_proxy(proxy_url)  # 提交付费任务前验证代理格式。
+        task_id = self._submit_task({
+            'type': 'CloudFlareTaskS2',
+            'websiteURL': page_url,
+            'proxy': proxy_url,
+            'userAgent': user_agent,
+            'waitLoad': False,
+            'requiredCookies': ['cf_clearance'],
+        })
+        return self._get_solution(task_id)
     
     def solve(self, site_key: str, page_url: str) -> str:
         Logger.log("验证码", "创建 YesCaptcha 任务...", "WAIT")
@@ -188,12 +238,101 @@ class ZapKeepAlive:
         self.page = None
         self.cdp = None
     
-    async def handle_cloudflare(self, max_attempts: int = 20) -> bool:
+    async def click_cloudflare_widget(self, clicked_nodes: set) -> bool:
+        """沿用上游的 CDP 鼠标事件，定位实际控件而非整块页面容器。"""
+        try:
+            document = await self.cdp.send('DOM.getDocument', {'depth': -1, 'pierce': True})
+            pending = [document['root']]
+            while pending:
+                node = pending.pop()
+                pending.extend(node.get('children', []))
+                pending.extend(node.get('shadowRoots', []))
+                if node.get('nodeName', '').upper() != 'IFRAME':
+                    continue
+                attrs = node.get('attributes', [])
+                attributes = dict(zip(attrs[::2], attrs[1::2]))
+                source = urlparse(attributes.get('src', ''))
+                if (source.scheme != 'https' or source.hostname != 'challenges.cloudflare.com'
+                        or '/turnstile/' not in source.path):
+                    continue
+                node_id = node['backendNodeId']
+                if node_id in clicked_nodes:
+                    continue  # 验证正在处理时，不重复点击同一个控件。
+                await self.cdp.send('DOM.scrollIntoViewIfNeeded', {'backendNodeId': node_id})
+                box = await self.cdp.send('DOM.getBoxModel', {'backendNodeId': node_id})
+                model = box['model']
+                if model['width'] < 100 or model['height'] < 40:
+                    continue  # 自动验证/隐藏的 iframe 不需要点击。
+                border = model['border']
+                x = min(border[::2]) + 30
+                y = (min(border[1::2]) + max(border[1::2])) / 2
+                await self.cdp.send('Input.dispatchMouseEvent', {
+                    'type': 'mouseMoved', 'x': x, 'y': y,
+                })
+                await self.cdp.send('Input.dispatchMouseEvent', {
+                    'type': 'mousePressed', 'x': x, 'y': y,
+                    'button': 'left', 'buttons': 1, 'clickCount': 1,
+                })
+                await asyncio.sleep(0.1)
+                await self.cdp.send('Input.dispatchMouseEvent', {
+                    'type': 'mouseReleased', 'x': x, 'y': y,
+                    'button': 'left', 'buttons': 0, 'clickCount': 1,
+                })
+                clicked_nodes.add(node_id)
+                Logger.log('Cloudflare', '已定位并点击验证控件，等待验证结果', 'WAIT')
+                return True
+        except Exception as error:
+            # 验证页面可能正在跳转或重新创建 iframe，下次轮询重新定位。
+            Logger.log('Cloudflare', f'控件定位/点击异常: {type(error).__name__}', 'WARN')
+        return False
+
+    async def resolve_cloudflare_with_api(self, max_attempts: int) -> bool:
+        if not PROXY_URL:
+            Logger.log('Cloudflare', 'YesCaptcha CloudFlareTaskS2 需要配置 ZAP_PROXY_URL; '
+                       '浏览器与 API 必须使用同一代理出口，本次不创建 API 任务', 'ERROR')
+            return False
+        try:
+            target_url = self.page.url
+            parsed = urlparse(target_url)
+            if parsed.scheme != 'https':
+                Logger.log('Cloudflare', '验证目标必须使用 HTTPS', 'ERROR')
+                return False
+            user_agent = await self.page.evaluate('navigator.userAgent')
+            Logger.log('Cloudflare', '调用 YesCaptcha CloudFlareTaskS2...', 'WAIT')
+            solution = await asyncio.to_thread(
+                self.solver.solve_cloudflare, target_url, PROXY_URL, user_agent
+            )
+            cookies = solution.get('cookies', {})
+            clearance = cookies.get('cf_clearance') if isinstance(cookies, dict) else None
+            solved_user_agent = solution.get('user_agent') or solution.get('userAgent')
+            if (not isinstance(clearance, str) or not clearance
+                    or not isinstance(solved_user_agent, str) or not solved_user_agent):
+                Logger.log('Cloudflare', 'YesCaptcha 未返回有效 cf_clearance 或 User-Agent', 'ERROR')
+                return False
+            await self.cdp.send('Network.setUserAgentOverride', {'userAgent': solved_user_agent})
+            # 只更新 clearance，保留当前账号的登录会话 Cookie。
+            await self.context.add_cookies([{
+                'name': 'cf_clearance', 'value': clearance,
+                'url': f'{parsed.scheme}://{parsed.netloc}/',
+                'secure': True, 'httpOnly': True,
+            }])
+            Logger.log('Cloudflare', '已应用验证 Cookie 和 User-Agent，重新检查页面', 'WAIT')
+            await self.page.reload(wait_until='domcontentloaded', timeout=60000)
+            # API 返回结果不代表网站已放行；同一次验证最多创建一个付费任务。
+            return await self.handle_cloudflare(max_attempts, use_solver=False)
+        except Exception as error:
+            Logger.log('Cloudflare', f'YesCaptcha 处理失败: {type(error).__name__}', 'ERROR')
+            return False
+
+    async def handle_cloudflare(self, max_attempts: int = 20, *, use_solver: bool = True) -> bool:
         last_state = '页面尚未加载'
+        last_title = ''
+        clicked_nodes = set()
         for attempt in range(max_attempts):
             try:
                 await self.page.wait_for_load_state('domcontentloaded', timeout=5000)
                 title = await self.page.title()
+                last_title = title
                 last_state = f'页面标题: {title[:100]}'
                 if title.strip() and "just a moment" not in title.lower():
                     return True
@@ -201,24 +340,27 @@ class ZapKeepAlive:
                 last_state = f'页面检查异常: {type(error).__name__}'
                 await asyncio.sleep(1)
                 continue
-            wrapper = await self.page.query_selector('.main-wrapper')
-            if wrapper:
-                rect = await wrapper.bounding_box()
-                if rect:
-                    x, y = int(rect['x'] + 25), int(rect['y'] + rect['height'] / 2)
-                    await self.cdp.send('Input.dispatchMouseEvent', {
-                        'type': 'mousePressed', 'x': x, 'y': y, 'button': 'left', 'clickCount': 1
-                    })
-                    await asyncio.sleep(0.1)
-                    await self.cdp.send('Input.dispatchMouseEvent', {
-                        'type': 'mouseReleased', 'x': x, 'y': y, 'button': 'left', 'clickCount': 1
-                    })
+            clicked = await self.click_cloudflare_widget(clicked_nodes)
+            if attempt == 0 and not clicked:
+                Logger.log('Cloudflare', '未发现可点击控件，等待页面自动验证', 'WAIT')
             await asyncio.sleep(2)
+        # 最后一次点击/自动验证可能已成功，提交付费任务前重新读取页面状态。
+        try:
+            await self.page.wait_for_load_state('domcontentloaded', timeout=5000)
+            last_title = await self.page.title()
+            last_state = f'页面标题: {last_title[:100]}'
+            if last_title.strip() and 'just a moment' not in last_title.lower():
+                return True
+        except Exception as error:
+            last_title = ''
+            last_state = f'页面检查异常: {type(error).__name__}'
+        if use_solver and self.solver and 'just a moment' in last_title.lower():
+            return await self.resolve_cloudflare_with_api(max_attempts)
         # 验证页仍保留目标 URL，不能将它当成登录或访问成功。
         parsed = urlparse(self.page.url)
         safe_url = parsed._replace(query='', fragment='').geturl()
         Logger.log('Cloudflare', f'验证超时 ({max_attempts} 次检查); '
-                   f'{last_state}; URL: {safe_url}', 'ERROR')
+                   f'{last_state}; 已点击控件: {len(clicked_nodes)}; URL: {safe_url}', 'ERROR')
         return False
     
     async def accept_cookies(self):
@@ -576,11 +718,11 @@ class ZapKeepAlive:
             Logger.log("启动", "启动浏览器...")
             self.browser = await p.chromium.launch(
                 headless=False,
+                proxy=browser_proxy(PROXY_URL),
                 args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
             )
             self.context = await self.browser.new_context(
                 viewport={'width': 1280, 'height': 900},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             )
             self.page = await self.context.new_page()
             self.cdp = await self.context.new_cdp_session(self.page)

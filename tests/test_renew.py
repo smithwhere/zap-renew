@@ -28,6 +28,8 @@ class RenewTests(unittest.IsolatedAsyncioTestCase):
         self.sleep_patch.start()
         self.addCleanup(self.sleep_patch.stop)
         self.keeper = renew.ZapKeepAlive('test@example.com', 'test-password')
+        self.keeper.solver = None
+        self.keeper.cdp = SimpleNamespace(send=AsyncMock(return_value={'root': {}}))
         self.page = SimpleNamespace(
             url=renew.BASE_URL + '/en/customer/vserver/show/123/overview/',
             wait_for_load_state=AsyncMock(),
