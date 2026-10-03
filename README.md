@@ -18,6 +18,7 @@
 |-------------|------|
 | `ZAP_ACCOUNT` | `邮箱:密码`，多账号用逗号分隔 |
 | `YESCAPTCHA_API_KEY` | YesCaptcha API 密钥 |
+| `ZAP_PROXY_URL` | 可选公网代理地址；调用 CloudFlareTaskS2 时必需，浏览器同步使用 |
 | `SMTP_USERNAME` | QQ 发件邮箱 |
 | `SMTP_PASSWORD` | QQ 邮箱 SMTP 服务授权码 |
 | `SMTP_TO` | 通知收件邮箱 |
@@ -31,6 +32,27 @@
 成功与失败结果均通过 QQ SMTP SSL (465) 发邮件。
 邮件显示“服务器接受”表示 SMTP 已接受投递，最终到达收件箱由邮件服务商处理。
 保活成功表示已访问并刷新 VPS 页面，不保证服务商已延长 Lifetime VPS 有效期。
+
+### Cloudflare 验证
+
+脚本沿用上游的 CDP 鼠标事件方式，定位实际 Turnstile iframe（包括 closed Shadow DOM），
+不会按整个页面容器的固定位置点击，也不会在同一控件验证过程中反复点击。
+浏览器使用原生 User-Agent；验证失败仍会终止任务。
+
+若整页 `Just a moment...` 挑战持续不通过，配置 `YESCAPTCHA_API_KEY` 和 `ZAP_PROXY_URL`
+后，脚本会通过 YesCaptcha `CloudFlareTaskS2` 获取 `cf_clearance` 和匹配的 User-Agent，
+应用到浏览器并重新验证。它与登录表单使用的 reCAPTCHA 接口是不同的任务类型。
+未配置代理时不会创建此 API 任务；一次验证最多创建一个任务，失败后不会反复扣费重试。
+
+代理格式为 `http://username:password@host:port`、`https://host:port` 或 `socks5://host:port`。
+带认证的 SOCKS5 不受支持。代理需要能被 YesCaptcha 服务器和运行器共同访问，出口必须稳定一致；
+不能使用只有本机可访问的 localhost 代理。代理凭据中的特殊字符应进行 URL 编码。
+接口接入不保证服务商放行，缺少有效代理时仅能使用页面自身验证和 CDP 点击方式。
+接口要求见 [YesCaptcha 官方文档](https://yescaptcha.atlassian.net/wiki/spaces/YESCAPTCHA/pages/389382145/CloudFlareTask%2BCloudFlare5S)。
+
+本地检查：安装依赖并执行 `playwright install chromium` 后，运行
+`python -m unittest discover -s tests -v`。浏览器测试使用本地响应夹具，
+不会发送真实账号或创建真实 YesCaptcha 付费任务。
 
 ## 青龙面板使用
 

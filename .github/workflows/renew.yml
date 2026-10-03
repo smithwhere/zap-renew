@@ -19,6 +19,7 @@ jobs:
     env:
       ZAP_ACCOUNT: ${{ secrets.ZAP_ACCOUNT || secrets.ACCOUNTS_ZAP || secrets.ACCOUNTS }}
       YESCAPTCHA_API_KEY: ${{ secrets.YESCAPTCHA_API_KEY }}
+      ZAP_PROXY_URL: ${{ secrets.ZAP_PROXY_URL }}
       STAY_DURATION: '10'
       LOGIN_WAIT_DURATION: '30'
       ZAP_BASE_URL: 'https://legacy.zap-hosting.com'
