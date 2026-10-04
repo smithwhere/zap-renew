@@ -23,7 +23,7 @@ jobs:
       YESCAPTCHA_API_KEY: ${{ secrets.YESCAPTCHA_API_KEY }}
       ZAP_PROXY_URL: ${{ secrets.ZAP_PROXY_URL }}
       STAY_DURATION: '10'
-      LOGIN_WAIT_DURATION: '30'
+      LOGIN_WAIT_DURATION: '3'
       ZAP_BASE_URL: 'https://legacy.zap-hosting.com'
       ZAP_VPS_URL: 'https://legacy.zap-hosting.com/en/customer/vserver/show/623379/overview/'
       SMTP_HOST: 'smtp.qq.com'

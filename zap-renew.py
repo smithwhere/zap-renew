@@ -41,7 +41,7 @@ ACCOUNTS_STR = (os.environ.get('ZAP_ACCOUNT') or
                 os.environ.get('ACCOUNTS_ZAP') or
                 os.environ.get('ACCOUNTS', ''))
 STAY_DURATION = int(os.environ.get('STAY_DURATION', '10'))
-LOGIN_WAIT_DURATION = int(os.environ.get('LOGIN_WAIT_DURATION', '30'))
+LOGIN_WAIT_DURATION = int(os.environ.get('LOGIN_WAIT_DURATION', '3'))
 
 BASE_URL = os.environ.get('ZAP_BASE_URL', 'https://legacy.zap-hosting.com').rstrip('/')
 LOGIN_URL = f"{BASE_URL}/interface/login/"

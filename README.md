@@ -35,7 +35,7 @@
 工作流使用自动提供的 `GITHUB_TOKEN` 和 `actions: read` 权限查询记录，无需新增 Secret。
 GitHub 定时触发可能延迟；周三检查也是 GitHub 定时任务，不保证在 08:00 准时启动。
 首次登录及验证码解决需要实际运行验证。
-当前工作流使用 Classic Panel (`legacy.zap-hosting.com`)，登录成功后等待 30 秒，
+当前工作流使用 Classic Panel (`legacy.zap-hosting.com`)，登录成功后等待 3 秒，
 访问指定 VPS 详情页、停留 10 秒并刷新。Cookie 提示出现时自动选择 **Accept all**。
 成功与失败结果均通过 QQ SMTP SSL (465) 发邮件。
 邮件显示“服务器接受”表示 SMTP 已接受投递，最终到达收件箱由邮件服务商处理。
