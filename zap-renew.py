@@ -592,7 +592,7 @@ class ZapKeepAlive:
         
         for link in links:
             if '/id/' in link['href'] or '/show/' in link['href']:
-                await self.page.goto(link['href'])
+                await self.page.goto(link['href'], wait_until='domcontentloaded')
                 Logger.log("VPS", f"进入 VPS 详情页", "OK")
                 break
         

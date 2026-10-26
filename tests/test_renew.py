@@ -134,6 +134,50 @@ class RenewTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PlaywrightTimeoutError):
             await self.keeper.login()
 
+    async def test_login_reaches_form_when_third_party_load_is_slow(self):
+        async def goto(url, **kwargs):
+            if kwargs.get('wait_until', 'load') == 'load':
+                raise PlaywrightTimeoutError('Slow third-party resource')
+            self.page.url = url
+
+        self.page.goto.side_effect = goto
+        self.page.title.return_value = 'Login'
+        self.page.locator = lambda selector: SimpleNamespace(is_visible=AsyncMock(return_value=False))
+        self.page.query_selector_all = AsyncMock(return_value=[])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            # An intentionally absent form must be reported, not a navigation timeout.
+            self.assertFalse(await self.keeper.login())
+        self.assertIn('找不到用户名输入框', output.getvalue())
+
+    async def test_login_still_stops_at_unresolved_challenge(self):
+        self.page.title.return_value = 'Just a moment...'
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertFalse(await self.keeper.login())
+        self.assertIn('Cloudflare 验证超时', output.getvalue())
+        self.assertNotIn('填写登录表单', output.getvalue())
+
+    async def test_discovered_vps_opens_when_third_party_load_is_slow(self):
+        detail_url = renew.BASE_URL + '/en/customer/vserver/show/123/overview/'
+
+        async def goto(url, **kwargs):
+            if kwargs.get('wait_until', 'load') == 'load':
+                raise PlaywrightTimeoutError('Slow third-party resource')
+            self.page.url = url
+
+        async def evaluate(script):
+            if 'querySelectorAll' in script:
+                return [{'href': detail_url, 'text': 'VPS'}]
+            return 'ONLINE'
+
+        self.page.goto.side_effect = goto
+        self.page.evaluate = evaluate
+        with patch.object(renew, 'VPS_URL', ''), \
+                patch.object(self.keeper, 'close_modals', new=AsyncMock()):
+            self.assertTrue(await self.keeper.visit_vps_detail())
+        self.assertEqual(self.page.url, detail_url)
+
     async def test_refresh_redirect_to_login_is_failure(self):
         self.page.url = renew.LOGIN_URL
         self.page.title.return_value = 'Login'
