@@ -117,6 +117,23 @@ class RenewTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(renew, 'STAY_DURATION', 0), patch.object(renew, 'VPS_URL', ''):
             self.assertTrue(await self.keeper.stay_and_refresh())
 
+    async def test_login_reaches_verification_without_waiting_for_full_load(self):
+        async def goto(url, **kwargs):
+            if kwargs.get('wait_until') != 'domcontentloaded':
+                raise PlaywrightTimeoutError('Slow third-party resource')
+        self.page.goto.side_effect = goto
+        output = io.StringIO()
+        with patch.object(self.keeper, 'handle_cloudflare',
+                          new=AsyncMock(return_value=False)), \
+                contextlib.redirect_stdout(output):
+            self.assertFalse(await self.keeper.login())
+        self.assertIn('Cloudflare 验证超时', output.getvalue())
+
+    async def test_login_navigation_failure_is_not_ignored(self):
+        self.page.goto.side_effect = PlaywrightTimeoutError('Document unavailable')
+        with self.assertRaises(PlaywrightTimeoutError):
+            await self.keeper.login()
+
     async def test_refresh_redirect_to_login_is_failure(self):
         self.page.url = renew.LOGIN_URL
         self.page.title.return_value = 'Login'
@@ -126,3 +143,4 @@ class RenewTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
