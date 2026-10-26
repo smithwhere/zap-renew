@@ -70,6 +70,23 @@ class RenewTests(unittest.IsolatedAsyncioTestCase):
         self.page.title.return_value = ''
         self.assertFalse(await self.keeper.handle_cloudflare(max_attempts=1))
 
+    async def test_login_inspects_form_without_waiting_for_slow_resources(self):
+        async def goto(url, **kwargs):
+            if kwargs.get('wait_until', 'load') == 'load':
+                raise PlaywrightTimeoutError('Slow third-party resource')
+            self.page.url = url
+
+        self.page.goto.side_effect = goto
+        self.page.locator = lambda selector: SimpleNamespace(
+            is_visible=AsyncMock(return_value=False)
+        )
+        self.page.query_selector_all = AsyncMock(return_value=[])
+        output = io.StringIO()
+        with patch.object(self.keeper, 'accept_cookies', new=AsyncMock()), \
+                contextlib.redirect_stdout(output):
+            self.assertFalse(await self.keeper.login())
+        self.assertIn('找不到用户名输入框', output.getvalue())
+
     async def test_challenge_timeout_explains_failure_without_query_tokens(self):
         self.page.title.return_value = 'Just a moment...'
         self.page.url += '?token=private-token'

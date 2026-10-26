@@ -1,5 +1,6 @@
 """Local browser fixtures exercise CDP mouse targeting without external requests."""
 import contextlib
+import asyncio
 import io
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -76,6 +77,32 @@ class CloudflareBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.keeper.handle_cloudflare(max_attempts=2))
         self.assertEqual(await self.page.title(), 'VPS Overview')
         self.assertIsNone(await self.page.get_attribute('body', 'data-unrelated'))
+
+    async def test_login_reaches_form_inspection_while_image_is_still_loading(self):
+        release_image = asyncio.Event()
+
+        async def serve_login(route):
+            if route.request.url == renew.LOGIN_URL:
+                await route.fulfill(
+                    body='<title>Login</title><img src="/slow-image.png">',
+                    content_type='text/html',
+                )
+            else:
+                await release_image.wait()
+                await route.abort()
+
+        await self.context.route('**/*', serve_login)
+        self.page.set_default_navigation_timeout(1000)
+        output = io.StringIO()
+        try:
+            with patch.object(renew.asyncio, 'sleep', new=AsyncMock()), \
+                    contextlib.redirect_stdout(output):
+                self.assertFalse(await self.keeper.login())
+            # A missing form must be reported, rather than a navigation timeout.
+            self.assertIn('找不到用户名输入框', output.getvalue())
+            self.assertEqual(await self.page.evaluate('document.readyState'), 'interactive')
+        finally:
+            release_image.set()
 
     async def test_last_widget_attempt_is_checked_before_timeout(self):
         await self.load_fixture()

@@ -341,7 +341,8 @@ class ZapKeepAlive:
     async def login(self) -> bool:
         Logger.log("登录", f"开始登录 {self.email}...", "WAIT")
         Logger.log("登录", "导航到登录页面...")
-        await self.page.goto(LOGIN_URL)
+        # 登录表单就绪即可继续，避免第三方资源拖延 load 事件。
+        await self.page.goto(LOGIN_URL, wait_until='domcontentloaded')
         await asyncio.sleep(3)
         
         Logger.log("登录", "处理 Cloudflare 验证...", "WAIT")
