@@ -6,6 +6,7 @@ from time import monotonic
 from urllib.parse import urljoin, urlparse
 
 from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 
@@ -17,7 +18,7 @@ VISIBLE_CHALLENGE = (
     'iframe[src*="challenges.cloudflare.com"]:visible, '
     '.g-recaptcha:visible, .h-captcha:visible, .cf-turnstile:visible'
 )
-FORM_CHALLENGE = ('.g-recaptcha, .h-captcha, .cf-turnstile, [data-sitekey], '
+FORM_CHALLENGE = ('.contains-recaptcha, .g-recaptcha, .h-captcha, .cf-turnstile, [data-sitekey], '
                   '[name="g-recaptcha-response"], [name="h-captcha-response"], '
                   '[name="cf-turnstile-response"]')
 
@@ -40,6 +41,12 @@ async def check_challenge(page, stage, response=None):
         raise LiveVerificationError(f'检测到验证码（{stage}），已停止。')
     if await page.locator('input[autocomplete="one-time-code"]:visible').count():
         raise LiveVerificationError(f'面板要求一次性验证码（{stage}），已停止。')
+
+
+async def check_form_challenge(form):
+    if await form.evaluate('(form, selector) => form.matches(selector) || !!form.querySelector(selector)',
+                           FORM_CHALLENGE):
+        raise LiveVerificationError('检测到验证码（登录表单要求人机验证），已停止。')
 
 
 async def verify_vps(page, email, password, vps_url):
@@ -72,8 +79,7 @@ async def verify_vps(page, email, password, vps_url):
             raise LiveVerificationError('未找到唯一的可见登录表单。')
         await asyncio.sleep(0.25)
 
-    if await forms.locator(FORM_CHALLENGE).count():
-        raise LiveVerificationError('检测到验证码（登录表单要求人机验证），已停止。')
+    await check_form_challenge(forms)
     submit = forms.get_by_role('button', name='Login', exact=True)
     action = await submit.get_attribute('formaction') or await forms.get_attribute('action') or ''
     method = await submit.get_attribute('formmethod') or await forms.get_attribute('method') or 'get'
@@ -84,11 +90,14 @@ async def verify_vps(page, email, password, vps_url):
     await forms.locator('input[name="username"]:visible').fill(email)
     await forms.locator('input[type="password"]:visible').fill(password)
     await check_challenge(page, '提交登录前')
-    if await forms.locator(FORM_CHALLENGE).count():
-        raise LiveVerificationError('检测到验证码（登录表单要求人机验证），已停止。')
+    await check_form_challenge(forms)
 
     print('[实站验证] 提交普通登录表单。', flush=True)
-    await submit.click()
+    try:
+        await submit.click()
+    except PlaywrightTimeoutError:
+        await check_challenge(page, '点击登录时')
+        raise LiveVerificationError('点击登录按钮时等待超时。') from None
     deadline = monotonic() + 20
     while True:
         await check_challenge(page, '提交登录后')

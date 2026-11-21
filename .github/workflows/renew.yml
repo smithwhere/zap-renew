@@ -84,7 +84,7 @@ jobs:
   verify-live:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.verify_live) ||
-      (github.event_name == 'push' && github.event.head_commit.message == 'Run Classic Panel live verification once for PR #5')
+      (github.event_name == 'push' && github.event.head_commit.message == 'Run Classic Panel verification with form challenge detection')
     name: Verify Classic Panel access
     runs-on: ubuntu-latest
     timeout-minutes: 10

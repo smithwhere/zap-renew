@@ -8,7 +8,7 @@ from scripts.verify_live import DASHBOARD_URL, LOGIN_URL, LiveVerificationError,
 VPS_URL = 'https://legacy.zap-hosting.com/en/customer/vserver/show/123/overview/'
 LOGIN_FORM = '''
 <title>Login</title>
-<form method="post" action="/en/customer/home/">
+<form method="post" action="/en/customer/home/" class="{form_class}">
   <input name="username" aria-label="Username / E-Mail">
   <input name="password" type="password" aria-label="Password">
   <button type="submit">Login</button>
@@ -19,7 +19,8 @@ LOGIN_FORM = '''
 
 class LiveVerificationTests(unittest.IsolatedAsyncioTestCase):
     async def setUp_browser(self, challenge='', submitted_page='<title>Dashboard</title>',
-                            vps_page='<title>vServer #1 - Overview - ZAP-Hosting</title>'):
+                            vps_page='<title>vServer #1 - Overview - ZAP-Hosting</title>',
+                            form_class=''):
         playwright = await async_playwright().start()
         self.addAsyncCleanup(playwright.stop)
         browser = await playwright.chromium.launch()
@@ -33,7 +34,7 @@ class LiveVerificationTests(unittest.IsolatedAsyncioTestCase):
                 if isinstance(challenge, dict):
                     await route.fulfill(**challenge)
                     return
-                body = LOGIN_FORM.format(challenge=challenge)
+                body = LOGIN_FORM.format(challenge=challenge, form_class=form_class)
             elif route.request.url == DASHBOARD_URL and route.request.method == 'POST':
                 self.submitted = True
                 body = submitted_page
@@ -56,6 +57,13 @@ class LiveVerificationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stops_before_filling_captcha_protected_form(self):
         page = await self.setUp_browser('<div class="g-recaptcha" hidden></div>')
+        with self.assertRaisesRegex(LiveVerificationError, '验证码.*登录表单'):
+            await verify_vps(page, 'fixture@example.test', 'fixture-password', VPS_URL)
+        self.assertEqual(await page.locator('input[name="username"]').input_value(), '')
+        self.assertFalse(self.submitted)
+
+    async def test_stops_when_classic_panel_marks_the_form_as_captcha_protected(self):
+        page = await self.setUp_browser(form_class='header-login-bar contains-recaptcha')
         with self.assertRaisesRegex(LiveVerificationError, '验证码.*登录表单'):
             await verify_vps(page, 'fixture@example.test', 'fixture-password', VPS_URL)
         self.assertEqual(await page.locator('input[name="username"]').input_value(), '')
