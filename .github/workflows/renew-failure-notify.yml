@@ -1,0 +1,54 @@
+name: ZAP Renew Failure Alert
+
+on:
+  workflow_run:
+    workflows: ['ZAP Renew']
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  alert:
+    if: >-
+      ${{ contains(fromJSON('["failure", "timed_out", "startup_failure", "action_required"]'), github.event.workflow_run.conclusion) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send failure alert
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_TO: ${{ secrets.SMTP_TO }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import smtplib
+          import ssl
+          from email.message import EmailMessage
+
+          try:
+              username = os.environ['SMTP_USERNAME']
+              password = os.environ['SMTP_PASSWORD']
+              recipient = os.environ['SMTP_TO']
+              run_id = os.environ['SOURCE_RUN_ID']
+              if not username or not password or not recipient or not run_id.isdecimal():
+                  raise ValueError('missing mail configuration or invalid run ID')
+              url = (f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+                     f"/actions/runs/{run_id}")
+              message = EmailMessage()
+              message['Subject'] = 'ZAP 保活工作流失败'
+              message['From'] = username
+              message['To'] = recipient
+              message.set_content(f'ZAP Renew 工作流未成功完成，请查看运行记录：\n{url}\n')
+              with smtplib.SMTP_SSL('smtp.qq.com', 465, context=ssl.create_default_context(), timeout=30) as smtp:
+                  smtp.login(username, password)
+                  if smtp.send_message(message):
+                      raise RuntimeError('recipient refused')
+              print('失败通知已被邮件服务器接受')
+          except (KeyError, OSError, smtplib.SMTPException, ValueError, RuntimeError) as error:
+              print(f'::error::失败通知发送失败 ({type(error).__name__})')
+              raise SystemExit(1)
+          PY
+
