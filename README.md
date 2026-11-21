@@ -5,7 +5,7 @@
 ## 功能
 
 - 支持多账号批量处理
-- 自动解决 reCAPTCHA 验证 (需要 YesCaptcha)
+- 通过 YesCaptcha 处理登录表单验证码
 - 自动处理 Cloudflare 验证
 - 会话持久化
 - Telegram 通知支持
@@ -17,7 +17,7 @@
 | Secret 名称 | 内容 |
 |-------------|------|
 | `ZAP_ACCOUNT` | `邮箱:密码`，多账号用逗号分隔 |
-| `YESCAPTCHA_API_KEY` | 登录表单 reCAPTCHA 使用的 YesCaptcha API 密钥 |
+| `YESCAPTCHA_API_KEY` | 登录表单验证码使用的 YesCaptcha API 密钥 |
 | `ZAP_PROXY_URL` | 可选浏览器代理地址；不配置时直接连接 |
 | `SMTP_USERNAME` | QQ 发件邮箱 |
 | `SMTP_PASSWORD` | QQ 邮箱 SMTP 服务授权码 |
@@ -51,11 +51,10 @@ GitHub 定时触发可能延迟；周三检查也是 GitHub 定时任务，不�
 脚本沿用上游的 CDP 鼠标事件方式，定位实际 Turnstile iframe（包括 closed Shadow DOM），
 不会按整个页面容器的固定位置点击，也不会在同一控件验证过程中反复点击。
 浏览器使用原生 User-Agent，先等待页面自动验证，再在需要时点击实际控件。
-Cloudflare 验证始终在浏览器中处理，不调用 YesCaptcha API，也不注入第三方返回的验证 Cookie。
-即使配置了 API 密钥或代理，也不会创建 Cloudflare 付费任务。
+整页 Cloudflare 验证在浏览器中处理，不调用 YesCaptcha API，也不注入第三方返回的验证 Cookie。
 最后一次点击后会重新检查页面，验证失败仍会终止任务；本地测试通过不保证每次实站验证都能通过。
-登录表单若使用 Turnstile，脚本等待页面自己生成验证结果；若未通过则停止登录。
-旧式 reCAPTCHA 表单仍通过 `YESCAPTCHA_API_KEY` 处理。
+登录表单若使用 Turnstile，脚本先等待页面自身完成验证；未完成时使用 YesCaptcha 的
+`TurnstileTaskProxyless` 处理该表单（每次成功任务可能产生费用）。旧式 reCAPTCHA 表单仍使用原接口。
 
 代理格式为 `http://username:password@host:port`、`https://host:port` 或 `socks5://host:port`。
 带认证的 SOCKS5 不受支持。代理只用于浏览器连接，不是 Cloudflare 验证的必需配置。
@@ -126,6 +125,7 @@ xvfb-run python3 zap-renew.py
 ## 许可
 
 MIT License
+
 
 
 
