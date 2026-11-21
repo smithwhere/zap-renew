@@ -37,6 +37,9 @@ GitHub 定时触发可能延迟；周三检查也是 GitHub 定时任务，不�
 首次登录及验证码解决需要实际运行验证。
 当前工作流使用 Classic Panel (`legacy.zap-hosting.com`)，登录成功后等待 3 秒，
 访问指定 VPS 详情页、停留 10 秒并刷新。Cookie 提示出现时自动选择 **Accept all**。
+登录提交后，`Run renew script` 中的“登录诊断”会记录登录 POST 和其他同源 POST 的数量及 HTTP 状态，
+并记录可见错误的已知通用提示；未识别提示只报告存在，不输出原文。没有 HTTP 响应或没有发出请求也会注明。
+诊断不记录请求地址、请求体、响应体或验证码，但这些信息仍可能不足以确定站点拒绝登录的原因。
 成功与失败结果均通过 QQ SMTP SSL (465) 发邮件。
 邮件显示“服务器接受”表示 SMTP 已接受投递，最终到达收件箱由邮件服务商处理。
 保活成功表示已访问并刷新 VPS 页面，不保证服务商已延长 Lifetime VPS 有效期。
@@ -120,3 +123,4 @@ xvfb-run python3 zap-renew.py
 ## 许可
 
 MIT License
+
