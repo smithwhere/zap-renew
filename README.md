@@ -54,7 +54,9 @@ GitHub 定时触发可能延迟；周三检查也是 GitHub 定时任务，不�
 整页 Cloudflare 验证在浏览器中处理，不调用 YesCaptcha API，也不注入第三方返回的验证 Cookie。
 最后一次点击后会重新检查页面，验证失败仍会终止任务；本地测试通过不保证每次实站验证都能通过。
 登录表单若使用 Turnstile，脚本先等待页面自身完成验证；未完成时使用 YesCaptcha 的
-`TurnstileTaskProxyless` 处理该表单（每次成功任务可能产生费用）。旧式 reCAPTCHA 表单仍使用原接口。
+`TurnstileTaskProxyless` 处理该表单（每次成功任务可能产生费用）。脚本按登录表单内的控件自动识别
+Turnstile 或 reCAPTCHA；两种控件同时存在时优先 Turnstile。reCAPTCHA 使用原接口，优先读取表单的
+sitekey；没有验证码时不调用 YesCaptcha。网站变更控件结构时可能需要更新识别逻辑。
 
 代理格式为 `http://username:password@host:port`、`https://host:port` 或 `socks5://host:port`。
 带认证的 SOCKS5 不受支持。代理只用于浏览器连接，不是 Cloudflare 验证的必需配置。
@@ -125,6 +127,7 @@ xvfb-run python3 zap-renew.py
 ## 许可
 
 MIT License
+
 
 
 
