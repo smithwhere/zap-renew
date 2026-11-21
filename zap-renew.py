@@ -26,6 +26,7 @@ import time
 import requests
 import smtplib
 import ssl
+import sys
 from email.message import EmailMessage
 from urllib.parse import urlparse, unquote
 from pathlib import Path
@@ -483,60 +484,51 @@ class ZapKeepAlive:
             except:
                 continue
         
-        if login_btn:
-            await login_btn.click()
-            Logger.log("登录", "点击了登录按钮", "OK")
-        else:
-            await password_input.press('Enter')
-            Logger.log("登录", "未找到按钮，按 Enter", "WARN")
-        
-        Logger.log("登录", "等待登录结果...", "WAIT")
-        await asyncio.sleep(5)
-        
-        # 调试: 检查页面上是否有错误提示
+        login_origin = urlparse(self.page.url)
+        response_statuses = set()
+
+        def record_submit_status(response):
+            request = response.request
+            if request.method == 'POST' and request.resource_type in {'document', 'fetch', 'xhr'}:
+                response_url = urlparse(response.url)
+                if (response_url.scheme, response_url.netloc) == (login_origin.scheme, login_origin.netloc):
+                    response_statuses.add(response.status)
+
+        self.page.on('response', record_submit_status)
         try:
-            modal_content = await self.page.evaluate('() => document.querySelector(".modal-body, .modal-content")?.innerText || ""')
-            if modal_content:
-                Logger.log("登录", f"Modal 内容: {modal_content[:150]}", "INFO")
-        except:
-            pass
-        
-        # 关闭可能的弹窗
-        await self.close_modals()
-        
-        # 等待并检查多次
-        for i in range(15):
-            await asyncio.sleep(2)
-            
-            # 每次都尝试关闭弹窗
-            await self.close_modals()
-            
-            url = self.page.url
-            if is_customer_url(url):
+            if login_btn:
+                await login_btn.click()
+                Logger.log("登录", "点击了登录按钮", "OK")
+            else:
+                await password_input.press('Enter')
+                Logger.log("登录", "未找到按钮，按 Enter", "WARN")
+
+            Logger.log("登录", "等待登录结果...", "WAIT")
+            await asyncio.sleep(5)
+            # 登录时保留站点的错误和验证提示。
+            for _ in range(15):
+                if is_customer_url(self.page.url):
+                    break
+                await asyncio.sleep(2)
+
+            if is_customer_url(self.page.url):
                 Logger.log("登录", "登录成功!", "OK")
                 return True
-            
-            # 检查是否有错误提示
-            try:
-                error_text = await self.page.evaluate('() => document.querySelector(".alert-danger, .error-message, .login-error, .text-danger")?.innerText || ""')
-                if error_text and 'wrong' in error_text.lower():
-                    Logger.log("登录", f"错误提示: {error_text[:100]}", "ERROR")
-                    break
-            except:
-                pass
-        
-        url = self.page.url
-        if is_customer_url(url):
-            Logger.log("登录", "登录成功!", "OK")
-            return True
-        
-        # 调试信息
-        Logger.log("登录", f"登录失败 - 当前URL: {url}", "ERROR")
-        try:
-            page_text = await self.page.evaluate('() => document.body.innerText.substring(0, 500)')
-            Logger.log("登录", f"页面内容: {page_text[:200]}...", "INFO")
-        except:
-            pass
+        finally:
+            self.page.remove_listener('response', record_submit_status)
+
+        if response_statuses:
+            statuses = ', '.join(f'HTTP {status}' for status in sorted(response_statuses))
+            Logger.log('登录', f'提交后同源 POST 响应为 {statuses}', 'INFO')
+        else:
+            Logger.log('登录', '提交后未观察到同源 POST 响应', 'WARN')
+
+        errors = self.page.locator(
+            '.alert-danger:visible, .error-message:visible, .login-error:visible, form .text-danger:visible'
+        )
+        if any(message.strip() for message in await errors.all_inner_texts()):
+            Logger.log('登录', '页面显示登录错误，请在 Classic Panel 手动登录查看提示', 'WARN')
+        Logger.log('登录', '登录失败，未进入 Classic Panel 客户区', 'ERROR')
         return False
     
     async def visit_vps_detail(self) -> bool:
@@ -799,6 +791,11 @@ async def main():
 
 
 if __name__ == '__main__':
-    result = asyncio.run(main())
-    exit(0 if result else 1)
+    if sys.argv[1:] == ['--verify-live']:
+        from scripts.verify_live import run
+
+        result = asyncio.run(run(parse_accounts(ACCOUNTS_STR), VPS_URL))
+    else:
+        result = asyncio.run(main())
+    raise SystemExit(0 if result else 1)
 
