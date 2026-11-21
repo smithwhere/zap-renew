@@ -154,6 +154,89 @@ class Logger:
         print(f"[{timestamp}] [{step}] {symbol} {msg}")
 
 
+class LoginDiagnostics:
+    """Record status codes and fixed public phrases, never request or response contents."""
+    PUBLIC_ERRORS = (
+        'Invalid credentials', 'Incorrect password', 'Invalid password',
+        'Invalid username or password', 'Wrong password', 'Too many attempts',
+        'Too many login attempts', 'Too many requests', 'Account locked',
+        'Session expired', 'Please try again later',
+    )
+    ERROR_SELECTOR = (
+        '.alert-danger:visible, .alert-error:visible, .error-message:visible, '
+        '.login-error:visible, .text-danger:visible, .invalid-feedback:visible, '
+        '[role="alert"]:visible'
+    )
+
+    def __init__(self, page, action_url):
+        self.page = page
+        self.origin = urlparse(BASE_URL)
+        self.action_path = urlparse(action_url).path or '/'
+        self.login_requests = {}
+        self.other_requests = {}
+        self.errors = set()
+        self.read_page = False
+
+    def on_request(self, request):
+        url = urlparse(request.url)
+        if (request.method != 'POST' or (url.scheme, url.netloc) !=
+                (self.origin.scheme, self.origin.netloc) or request.service_worker):
+            return
+        try:
+            if request.frame != self.page.main_frame:
+                return
+        except Exception:
+            return
+        is_login = (url.path == self.action_path or
+                    (request.resource_type in ('fetch', 'xhr') and
+                     url.path.endswith('/json_login.php')))
+        target = self.login_requests if is_login else self.other_requests
+        target[request] = '观察结束时尚无响应'
+
+    def on_response(self, response):
+        for target in (self.login_requests, self.other_requests):
+            if response.request in target:
+                target[response.request] = f'HTTP {response.status}'
+
+    def on_failure(self, request):
+        for target in (self.login_requests, self.other_requests):
+            if request in target and target[request] == '观察结束时尚无响应':
+                target[request] = '请求失败（无 HTTP 响应）'
+
+    def start(self):
+        self.page.on('request', self.on_request)
+        self.page.on('response', self.on_response)
+        self.page.on('requestfailed', self.on_failure)
+
+    async def read_errors(self):
+        url = urlparse(self.page.url)
+        if (url.scheme, url.netloc) != (self.origin.scheme, self.origin.netloc):
+            return
+        try:
+            messages = await self.page.locator(self.ERROR_SELECTOR).all_inner_texts()
+        except Exception:
+            return
+        self.read_page = True
+        for message in messages:
+            message = ' '.join(message.lower().split())
+            if not message:
+                continue
+            known = [phrase for phrase in self.PUBLIC_ERRORS if phrase.lower() in message]
+            self.errors.update(known or ['其他可见错误（原文已隐藏）'])
+
+    async def finish(self):
+        await self.read_errors()
+        self.page.remove_listener('request', self.on_request)
+        self.page.remove_listener('response', self.on_response)
+        self.page.remove_listener('requestfailed', self.on_failure)
+        for label, target in (('登录提交 POST', self.login_requests),
+                              ('其他同源 POST', self.other_requests)):
+            responses = '、'.join(target.values()) or '无'
+            Logger.log('登录诊断', f'{label}：{len(target)} 次；响应：{responses}')
+        errors = '、'.join(sorted(self.errors)) or ('未观察到' if self.read_page else '无法读取')
+        Logger.log('登录诊断', f'页面可见错误提示：{errors}')
+
+
 class YesCaptchaSolver:
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -339,7 +422,7 @@ class ZapKeepAlive:
             pass
     
     async def login(self) -> bool:
-        Logger.log("登录", f"开始登录 {self.email}...", "WAIT")
+        Logger.log("登录", "开始登录...", "WAIT")
         Logger.log("登录", "导航到登录页面...")
         # 登录页的第三方资源可能迟迟不触发 load；DOM 就绪后继续验证页面。
         await self.page.goto(LOGIN_URL, wait_until='domcontentloaded')
@@ -409,7 +492,7 @@ class ZapKeepAlive:
                 await email_trigger.click(timeout=10000)
                 Logger.log("登录", "已展开邮箱登录表单", "OK")
         await email_input.fill(self.email)
-        Logger.log("登录", f"用户名: {self.email}", "OK")
+        Logger.log("登录", "用户名已填写", "OK")
         all_passwords = await login_form.query_selector_all('input[type="password"]')
         for pwd in all_passwords:
             if await pwd.is_visible():
@@ -483,61 +566,34 @@ class ZapKeepAlive:
             except:
                 continue
         
-        if login_btn:
-            await login_btn.click()
-            Logger.log("登录", "点击了登录按钮", "OK")
-        else:
-            await password_input.press('Enter')
-            Logger.log("登录", "未找到按钮，按 Enter", "WARN")
-        
-        Logger.log("登录", "等待登录结果...", "WAIT")
-        await asyncio.sleep(5)
-        
-        # 调试: 检查页面上是否有错误提示
+        action_url = await login_form.evaluate('(form) => form.action')
+        diagnostics = LoginDiagnostics(self.page, action_url)
+        diagnostics.start()
         try:
-            modal_content = await self.page.evaluate('() => document.querySelector(".modal-body, .modal-content")?.innerText || ""')
-            if modal_content:
-                Logger.log("登录", f"Modal 内容: {modal_content[:150]}", "INFO")
-        except:
-            pass
-        
-        # 关闭可能的弹窗
-        await self.close_modals()
-        
-        # 等待并检查多次
-        for i in range(15):
-            await asyncio.sleep(2)
-            
-            # 每次都尝试关闭弹窗
-            await self.close_modals()
-            
-            url = self.page.url
-            if is_customer_url(url):
+            if login_btn:
+                await login_btn.click()
+                Logger.log("登录", "点击了登录按钮", "OK")
+            else:
+                await password_input.press('Enter')
+                Logger.log("登录", "未找到按钮，按 Enter", "WARN")
+
+            Logger.log("登录", "等待登录结果...", "WAIT")
+            await asyncio.sleep(5)
+            for _ in range(15):
+                # Read visible errors before closing any modal that might contain them.
+                await diagnostics.read_errors()
+                if is_customer_url(self.page.url):
+                    Logger.log("登录", "登录成功!", "OK")
+                    return True
+                await self.close_modals()
+                await asyncio.sleep(2)
+            if is_customer_url(self.page.url):
                 Logger.log("登录", "登录成功!", "OK")
                 return True
-            
-            # 检查是否有错误提示
-            try:
-                error_text = await self.page.evaluate('() => document.querySelector(".alert-danger, .error-message, .login-error, .text-danger")?.innerText || ""')
-                if error_text and 'wrong' in error_text.lower():
-                    Logger.log("登录", f"错误提示: {error_text[:100]}", "ERROR")
-                    break
-            except:
-                pass
-        
-        url = self.page.url
-        if is_customer_url(url):
-            Logger.log("登录", "登录成功!", "OK")
-            return True
-        
-        # 调试信息
-        Logger.log("登录", f"登录失败 - 当前URL: {url}", "ERROR")
-        try:
-            page_text = await self.page.evaluate('() => document.body.innerText.substring(0, 500)')
-            Logger.log("登录", f"页面内容: {page_text[:200]}...", "INFO")
-        except:
-            pass
-        return False
+            Logger.log("登录", "登录失败，未进入客户区", "ERROR")
+            return False
+        finally:
+            await diagnostics.finish()
     
     async def visit_vps_detail(self) -> bool:
         if VPS_URL:
@@ -801,4 +857,5 @@ async def main():
 if __name__ == '__main__':
     result = asyncio.run(main())
     exit(0 if result else 1)
+
 
