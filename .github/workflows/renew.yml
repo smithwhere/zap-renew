@@ -4,9 +4,6 @@ on:
   schedule:
     - cron: '0 0 * * 1'  # 每周一 UTC 00:00 (北京时间 08:00)
     - cron: '0 0 * * 3'  # 每周三北京时间 08:00，周一漏跑或失败时补跑
-  push:
-    branches: [fix/classic-login-failure-diagnostics]
-    paths: ['.github/workflows/renew.yml']
   workflow_dispatch:  # 手动触发
     inputs:
       verify_live:
@@ -82,9 +79,7 @@ jobs:
         timeout-minutes: 15
 
   verify-live:
-    if: >-
-      (github.event_name == 'workflow_dispatch' && inputs.verify_live) ||
-      (github.event_name == 'push' && github.event.head_commit.message == 'Run Classic Panel login POST verification for PR 5')
+    if: github.event_name == 'workflow_dispatch' && inputs.verify_live
     name: Verify Classic Panel access
     runs-on: ubuntu-latest
     timeout-minutes: 10
