@@ -29,11 +29,8 @@ jobs:
     timeout-minutes: 20
     env:
       ZAP_ACCOUNT: ${{ secrets.ZAP_ACCOUNT || secrets.ACCOUNTS_ZAP || secrets.ACCOUNTS }}
-      YESCAPTCHA_API_KEY: ${{ secrets.YESCAPTCHA_API_KEY }}
-      ZAP_PROXY_URL: ${{ secrets.ZAP_PROXY_URL }}
       STAY_DURATION: '10'
       LOGIN_WAIT_DURATION: '3'
-      ZAP_BASE_URL: 'https://legacy.zap-hosting.com'
       SMTP_HOST: 'smtp.qq.com'
       SMTP_PORT: '465'
       SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
@@ -57,8 +54,8 @@ jobs:
         if: steps.schedule_check.outputs.should_run == 'true'
         shell: bash
         run: |
-          if [ -z "$ZAP_ACCOUNT" ] || [ -z "$YESCAPTCHA_API_KEY" ]; then
-            echo '请在 Repository secrets 中配置 ZAP_ACCOUNT 和 YESCAPTCHA_API_KEY'
+          if [ -z "$ZAP_ACCOUNT" ]; then
+            echo '请在 Repository secrets 中配置 ZAP_ACCOUNT'
             exit 1
           fi
           if [ -z "$SMTP_USERNAME" ] || [ -z "$SMTP_PASSWORD" ] || [ -z "$SMTP_TO" ]; then
@@ -71,11 +68,10 @@ jobs:
         run: |
           pip install -r requirements.txt
           playwright install --with-deps chromium
-          sudo apt-get install -y xvfb xauth
       
       - name: Run renew script
         if: steps.schedule_check.outputs.should_run == 'true'
-        run: xvfb-run python -u zap-renew.py
+        run: python -u zap-renew.py --renew
         timeout-minutes: 15
 
   verify-live:

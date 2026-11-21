@@ -31,6 +31,7 @@ class LiveVerificationTests(unittest.IsolatedAsyncioTestCase):
         page = await browser.new_page()
         self.submitted = False
         self.visited_vps = False
+        self.vps_visits = 0
 
         async def route_request(route):
             if route.request.url == LOGIN_URL:
@@ -43,6 +44,7 @@ class LiveVerificationTests(unittest.IsolatedAsyncioTestCase):
                 body = submitted_page
             elif route.request.url == VPS_URL:
                 self.visited_vps = True
+                self.vps_visits += 1
                 body = vps_page
             else:
                 await route.abort()
@@ -61,6 +63,13 @@ class LiveVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Login 点击：已完成', log.getvalue())
         self.assertIn('登录提交 POST：1 次；响应：HTTP 200', log.getvalue())
 
+    async def test_renew_refreshes_the_verified_vps_page(self):
+        page = await self.setUp_browser()
+        with redirect_stdout(io.StringIO()) as log:
+            await verify_vps(page, 'fixture@example.test', 'fixture-password', VPS_URL, stay_duration=0)
+        self.assertEqual(self.vps_visits, 2)
+        self.assertIn('已刷新并确认目标 VPS 概览', log.getvalue())
+
     async def test_stops_before_filling_captcha_protected_form(self):
         page = await self.setUp_browser('<div class="g-recaptcha" hidden></div>')
         with self.assertRaisesRegex(LiveVerificationError, '验证码.*登录表单'):
@@ -72,12 +81,13 @@ class LiveVerificationTests(unittest.IsolatedAsyncioTestCase):
         page = await self.setUp_browser(form_class='header-login-bar contains-recaptcha')
         with redirect_stdout(io.StringIO()) as log:
             with self.assertRaisesRegex(LiveVerificationError, '验证码.*登录表单'):
-                await verify_vps(page, 'fixture@example.test', 'fixture-password', VPS_URL)
+                await verify_vps(page, 'fixture@example.test', 'fixture-password', VPS_URL, stay_duration=0)
         self.assertIn('登录页响应：HTTP 200', log.getvalue())
         self.assertIn('Login 点击：未尝试', log.getvalue())
         self.assertIn('登录提交 POST：不适用；响应：不适用', log.getvalue())
         self.assertEqual(await page.locator('input[name="username"]').input_value(), '')
         self.assertFalse(self.submitted)
+        self.assertFalse(self.visited_vps)
 
     async def test_click_with_client_validation_and_no_login_request(self):
         page = await self.setUp_browser('''

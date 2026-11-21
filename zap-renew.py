@@ -790,11 +790,31 @@ async def main():
     return success_count == len(results) and mail_sent
 
 
+async def run_renew():
+    from scripts.verify_live import run
+
+    success = await run(
+        parse_accounts(ACCOUNTS_STR), VPS_URL,
+        stay_duration=STAY_DURATION, login_wait_duration=LOGIN_WAIT_DURATION,
+    )
+    if success:
+        title = 'ZAP 保活成功'
+        message = '已访问并刷新指定的 VPS 概览页。'
+    else:
+        title = 'ZAP 保活失败'
+        message = '保活流程未完成。请查看运行日志中的脱敏诊断。'
+    notify_send(title, message)
+    mail_sent = await asyncio.to_thread(send_email, title, message)
+    return success and mail_sent
+
+
 if __name__ == '__main__':
     if sys.argv[1:] == ['--verify-live']:
         from scripts.verify_live import run
 
         result = asyncio.run(run(parse_accounts(ACCOUNTS_STR), VPS_URL))
+    elif sys.argv[1:] == ['--renew']:
+        result = asyncio.run(run_renew())
     else:
         result = asyncio.run(main())
     raise SystemExit(0 if result else 1)

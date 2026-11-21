@@ -191,7 +191,15 @@ async def verify_login(page, email, password, diagnostics):
         await asyncio.sleep(0.25)
 
 
-async def verify_vps(page, email, password, vps_url):
+async def check_vps_overview(page, response, target, stage):
+    await check_challenge(page, stage, response)
+    if (not response or not response.ok or not is_classic_url(page.url) or
+            urlparse(page.url).path.rstrip('/') != target.path.rstrip('/') or
+            not re.search(r'vServer.*Overview.*ZAP-Hosting', await page.title(), re.IGNORECASE)):
+        raise LiveVerificationError(f'{stage}时未显示目标 VPS 概览。')
+
+
+async def verify_vps(page, email, password, vps_url, *, stay_duration=None, login_wait_duration=0):
     target = urlparse(vps_url)
     if (not is_classic_url(vps_url) or target.query or target.fragment or
             not re.fullmatch(r'/en/customer/vserver/show/\d+/overview/?', target.path)):
@@ -203,17 +211,21 @@ async def verify_vps(page, email, password, vps_url):
     finally:
         await diagnostics.report()
 
+    if login_wait_duration:
+        await asyncio.sleep(login_wait_duration)
     print('[实站验证] 已进入 Classic Panel 客户区，正在打开目标 VPS。', flush=True)
     response = await page.goto(vps_url, wait_until='domcontentloaded')
-    await check_challenge(page, '打开 VPS', response)
-    if (not response or not response.ok or not is_classic_url(page.url) or
-            urlparse(page.url).path.rstrip('/') != target.path.rstrip('/') or
-            not re.search(r'vServer.*Overview.*ZAP-Hosting', await page.title(), re.IGNORECASE)):
-        raise LiveVerificationError('未显示目标 VPS 概览。')
+    await check_vps_overview(page, response, target, '打开 VPS')
     print('[实站验证] 已打开并确认目标 VPS 概览。', flush=True)
+    if stay_duration is not None:
+        print(f'[保活] 在目标 VPS 概览页停留 {stay_duration} 秒后刷新。', flush=True)
+        await asyncio.sleep(stay_duration)
+        response = await page.reload(wait_until='domcontentloaded')
+        await check_vps_overview(page, response, target, '刷新 VPS')
+        print('[保活] 已刷新并确认目标 VPS 概览。', flush=True)
 
 
-async def run(accounts, vps_url):
+async def run(accounts, vps_url, *, stay_duration=None, login_wait_duration=0):
     if not accounts or any(not account['email'] or not account['password'] for account in accounts):
         print('::error::[实站验证] 缺少有效的 ZAP_ACCOUNT 配置。', flush=True)
         return False
@@ -227,7 +239,10 @@ async def run(accounts, vps_url):
                         page = await context.new_page()
                         page.set_default_timeout(10_000)
                         page.set_default_navigation_timeout(20_000)
-                        await verify_vps(page, account['email'], account['password'], vps_url)
+                        await verify_vps(
+                            page, account['email'], account['password'], vps_url,
+                            stay_duration=stay_duration, login_wait_duration=login_wait_duration,
+                        )
     except (LiveVerificationError, PlaywrightError) as error:
         detail = str(error) if isinstance(error, LiveVerificationError) else type(error).__name__
         print(f'::error::[实站验证] {detail}', flush=True)
