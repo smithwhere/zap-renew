@@ -12,6 +12,67 @@ from test_renew import renew
 
 
 class LoginBrowserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recaptcha_form_selects_recaptcha_and_uses_its_site_key(self):
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            self.addAsyncCleanup(browser.close)
+            page = await browser.new_page()
+            submitted = []
+
+            async def route_request(route):
+                if route.request.method == 'POST':
+                    submitted.append(route.request.post_data)
+                    await route.fulfill(content_type='text/html', body='<title>Dashboard</title>')
+                else:
+                    await route.fulfill(content_type='text/html', body='''
+                      <title>Login</title><form class="inline-login" method="post" action="/en/customer/home/">
+                        <input name="username" autocomplete="username"><input type="password" name="password">
+                        <div class="g-recaptcha" data-sitekey="fixture-recaptcha-sitekey"></div>
+                        <textarea name="g-recaptcha-response" hidden></textarea>
+                        <button type="submit">Login</button>
+                      </form>
+                    ''')
+            await page.route('**/*', route_request)
+            output = io.StringIO()
+            with TemporaryDirectory() as temp, patch.object(renew, 'SESSION_DIR', Path(temp)), \
+                    patch.object(renew.asyncio, 'sleep', new=AsyncMock()), contextlib.redirect_stdout(output):
+                keeper = renew.ZapKeepAlive('fixture@example.test', 'fixture-password')
+                keeper.page = page
+                keeper.solver = unittest.mock.Mock()
+                keeper.solver.solve.return_value = 'private-recaptcha-token'
+                self.assertTrue(await keeper.login())
+                keeper.solver.solve.assert_called_once_with('fixture-recaptcha-sitekey', renew.LOGIN_URL)
+                keeper.solver.solve_turnstile.assert_not_called()
+            self.assertIn('g-recaptcha-response=private-recaptcha-token', submitted[0])
+            self.assertNotIn('private-recaptcha-token', output.getvalue())
+            self.assertIn('reCAPTCHA', output.getvalue())
+
+    async def test_login_without_captcha_does_not_call_a_solver(self):
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            self.addAsyncCleanup(browser.close)
+            page = await browser.new_page()
+
+            async def route_request(route):
+                if route.request.method == 'POST':
+                    await route.fulfill(content_type='text/html', body='<title>Dashboard</title>')
+                else:
+                    await route.fulfill(content_type='text/html', body='''
+                      <title>Login</title><form class="inline-login" method="post" action="/en/customer/home/">
+                        <input name="username" autocomplete="username"><input type="password" name="password">
+                        <button type="submit">Login</button>
+                      </form><div class="g-recaptcha" data-sitekey="unrelated"></div>
+                    ''')
+            await page.route('**/*', route_request)
+            with TemporaryDirectory() as temp, patch.object(renew, 'SESSION_DIR', Path(temp)), \
+                    patch.object(renew.asyncio, 'sleep', new=AsyncMock()), contextlib.redirect_stdout(io.StringIO()):
+                keeper = renew.ZapKeepAlive('fixture@example.test', 'fixture-password')
+                keeper.page = page
+                keeper.solver = unittest.mock.Mock()
+                self.assertTrue(await keeper.login())
+                keeper.solver.solve.assert_not_called()
+                keeper.solver.solve_turnstile.assert_not_called()
+
     async def test_yescaptcha_token_reaches_turnstile_component_submission(self):
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
@@ -27,6 +88,7 @@ class LoginBrowserTests(unittest.IsolatedAsyncioTestCase):
                     await route.fulfill(content_type='text/html', body='''
                         <title>Login</title><form class="inline-login">
                           <input name="username" autocomplete="username"><input type="password">
+                          <div class="g-recaptcha" data-sitekey="unused-recaptcha"></div>
                           <div class="inline-login-turnstile"><input type="hidden"
                             id="cf-chl-widget-login1_response" name="cf-turnstile-response"></div>
                           <button type="submit">Login</button>
@@ -56,6 +118,7 @@ class LoginBrowserTests(unittest.IsolatedAsyncioTestCase):
                 keeper.solver.solve_turnstile.return_value = 'private-fixture-token'
                 self.assertFalse(await keeper.login())
                 keeper.solver.solve_turnstile.assert_called_once_with('0xfixture', renew.LOGIN_URL)
+                keeper.solver.solve.assert_not_called()
             self.assertEqual(submitted, ['token=private-fixture-token&other=other-token'])
             self.assertNotIn('private-fixture-token', output.getvalue())
 
@@ -361,6 +424,7 @@ class LoginBrowserTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
 
 
 

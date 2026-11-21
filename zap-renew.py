@@ -578,11 +578,22 @@ class ZapKeepAlive:
             Logger.log("登录", "找不到密码输入框", "ERROR")
             return False
         
-        # Classic Panel uses Turnstile when the login form contains its widget.
-        turnstile = await login_form.query_selector(
-            '.inline-login-turnstile, input[name="cf-turnstile-response"]'
-        )
-        if turnstile:
+        # Inspect the chosen form only; other forms on the page may use different widgets.
+        captcha = await login_form.evaluate('''form => {
+            if (form.querySelector('.inline-login-turnstile, .cf-turnstile, [name="cf-turnstile-response"]'))
+                return {type: 'turnstile'};
+            const recaptcha = form.querySelector('.g-recaptcha, .async-g-recaptcha, '
+                + '.inline-login-recaptcha, [name="g-recaptcha-response"], '
+                + 'iframe[src*="/recaptcha/"]');
+            if (recaptcha || form.matches('.contains-recaptcha')) {
+                const keyed = form.querySelector('.g-recaptcha[data-sitekey], '
+                    + '.async-g-recaptcha[data-sitekey], .inline-login-recaptcha[data-sitekey]');
+                return {type: 'recaptcha', sitekey: keyed?.getAttribute('data-sitekey')
+                    || form.__vue__?.recaptchaSitekey || ''};
+            }
+            return {type: 'none'};
+        }''')
+        if captcha['type'] == 'turnstile':
             Logger.log('登录', '等待登录表单的 Turnstile 验证...', 'WAIT')
             verified = False
             for _ in range(5):
@@ -631,19 +642,21 @@ class ZapKeepAlive:
                     return False
             else:
                 Logger.log('登录', 'Turnstile 已返回验证结果', 'OK')
-        elif self.solver:
-            # Older reCAPTCHA forms still use the existing solver.
+        elif captcha['type'] == 'recaptcha':
+            if not self.solver:
+                Logger.log('登录', '检测到 reCAPTCHA，但未配置 YesCaptcha', 'ERROR')
+                return False
             Logger.log("登录", "等待 reCAPTCHA 结果...", "WAIT")
             try:
                 recaptcha_token = await asyncio.to_thread(
-                    self.solver.solve, RECAPTCHA_SITEKEY, self.page.url
+                    self.solver.solve, captcha.get('sitekey') or RECAPTCHA_SITEKEY, self.page.url
                 )
                 Logger.log("登录", "reCAPTCHA 已解决", "OK")
                 
                 # 注入 token
-                await self.page.evaluate('''
-                    (token) => {
-                        const textareas = document.querySelectorAll('textarea[name="g-recaptcha-response"]');
+                await login_form.evaluate('''
+                    (form, token) => {
+                        const textareas = form.querySelectorAll('textarea[name="g-recaptcha-response"]');
                         textareas.forEach(ta => {
                             ta.value = token;
                             ta.dispatchEvent(new Event('input', {bubbles: true}));
@@ -676,7 +689,7 @@ class ZapKeepAlive:
                 Logger.log("登录", f"reCAPTCHA 错误: {e}", "ERROR")
                 return False
         else:
-            Logger.log("登录", "未配置 YESCAPTCHA_API_KEY", "WARN")
+            Logger.log('登录', '登录表单未发现验证码，直接提交')
         
         # 立即点击登录按钮
         Logger.log("登录", "点击 Login 按钮...")
@@ -986,6 +999,7 @@ async def main():
 if __name__ == '__main__':
     result = asyncio.run(main())
     exit(0 if result else 1)
+
 
 
 
