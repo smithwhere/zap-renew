@@ -44,6 +44,10 @@ GitHub 定时触发可能延迟；周三检查也是 GitHub 定时任务，不�
 未识别、非 JSON 或无法读取的响应不会输出原文。类别仅代表相关线索，并非已确定的根因。
 成功与失败结果均通过 QQ SMTP SSL (465) 发邮件。
 邮件显示“服务器接受”表示 SMTP 已接受投递，最终到达收件箱由邮件服务商处理。
+另有独立的 `ZAP Renew Failure Alert` 工作流，在主工作流失败或超时时发送包含运行链接的提醒，
+覆盖依赖安装等脚本启动前的失败。脚本已发出失败邮件时，可能额外收到一封提醒。
+该提醒仍依赖 GitHub Actions 和同一 SMTP 配置；任务没有被 GitHub 创建、Actions 整体不可用或
+SMTP 服务器不可用时不能保证邮件送达。
 保活成功表示已访问并刷新 VPS 页面，不保证服务商已延长 Lifetime VPS 有效期。
 
 ### Cloudflare 验证
@@ -127,6 +131,7 @@ xvfb-run python3 zap-renew.py
 ## 许可
 
 MIT License
+
 
 
 
