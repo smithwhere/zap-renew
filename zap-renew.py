@@ -567,8 +567,28 @@ class ZapKeepAlive:
             Logger.log("登录", "找不到密码输入框", "ERROR")
             return False
         
-        # 等待 reCAPTCHA 结果并注入
-        if self.solver:
+        # Classic Panel now prefers its own Turnstile widget when present.
+        # Let the page obtain a token normally; never substitute a reCAPTCHA token.
+        turnstile = await login_form.query_selector(
+            '.inline-login-turnstile, input[name="cf-turnstile-response"]'
+        )
+        if turnstile:
+            Logger.log('登录', '等待登录表单的 Turnstile 验证...', 'WAIT')
+            verified = False
+            for _ in range(30):
+                verified = await login_form.evaluate('''form => {
+                    const response = form.querySelector('[name="cf-turnstile-response"]');
+                    return Boolean(response && response.value);
+                }''')
+                if verified:
+                    break
+                await asyncio.sleep(2)
+            if not verified:
+                Logger.log('登录', 'Turnstile 未返回验证结果，停止登录', 'ERROR')
+                return False
+            Logger.log('登录', 'Turnstile 已返回验证结果', 'OK')
+        elif self.solver:
+            # Older reCAPTCHA forms still use the existing solver.
             Logger.log("登录", "等待 reCAPTCHA 结果...", "WAIT")
             try:
                 recaptcha_token = await asyncio.to_thread(
@@ -918,6 +938,7 @@ async def main():
 if __name__ == '__main__':
     result = asyncio.run(main())
     exit(0 if result else 1)
+
 
 
 
