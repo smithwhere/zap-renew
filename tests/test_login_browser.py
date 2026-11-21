@@ -12,6 +12,78 @@ from test_renew import renew
 
 
 class LoginBrowserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_422_json_error_is_categorized_without_exposing_response(self):
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            self.addAsyncCleanup(browser.close)
+            page = await browser.new_page()
+
+            async def route_request(route):
+                if route.request.method == 'POST':
+                    await route.fulfill(status=422, content_type='application/json', body='''
+                        {"error": {"code": "CAPTCHA_INVALID", "message": "Captcha rejected: private-token"},
+                         "password": "fixture-password", "email": "fixture@example.test"}
+                    ''')
+                else:
+                    await route.fulfill(content_type='text/html', body='''
+                        <title>Login</title><form class="inline-login">
+                          <input name="username" autocomplete="username"><input type="password">
+                          <button type="submit">Login</button>
+                        </form><script>document.querySelector('form').onsubmit = event => {
+                          event.preventDefault();
+                          fetch('/interface/login/json_login.php', {method: 'POST'});
+                        };</script>
+                    ''')
+            await page.route('**/*', route_request)
+            output = io.StringIO()
+            with TemporaryDirectory() as temp, \
+                    patch.object(renew, 'SESSION_DIR', Path(temp)), \
+                    patch.object(renew.asyncio, 'sleep', new=AsyncMock()), \
+                    contextlib.redirect_stdout(output):
+                keeper = renew.ZapKeepAlive('fixture@example.test', 'fixture-password')
+                keeper.page = page
+                keeper.solver = None
+                self.assertFalse(await keeper.login())
+            log = output.getvalue()
+            self.assertIn('登录提交 POST：1 次；响应：HTTP 422', log)
+            self.assertIn('HTTP 422 响应类别：验证码相关', log)
+            for private in ('private-token', 'fixture-password', 'fixture@example.test', 'Captcha rejected'):
+                self.assertNotIn(private, log)
+
+    async def test_422_unknown_response_never_prints_untrusted_text(self):
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            self.addAsyncCleanup(browser.close)
+            page = await browser.new_page()
+
+            async def route_request(route):
+                if route.request.method == 'POST':
+                    await route.fulfill(status=422, content_type='application/json',
+                                        body='{"error":{"code":"PRIVATE-123","message":"private response"}}')
+                else:
+                    await route.fulfill(content_type='text/html', body='''
+                        <title>Login</title><form class="inline-login">
+                          <input name="username" autocomplete="username"><input type="password">
+                          <button type="submit">Login</button>
+                        </form><script>document.querySelector('form').onsubmit = event => {
+                          event.preventDefault();
+                          fetch('/interface/login/json_login.php', {method: 'POST'});
+                        };</script>
+                    ''')
+            await page.route('**/*', route_request)
+            output = io.StringIO()
+            with TemporaryDirectory() as temp, \
+                    patch.object(renew, 'SESSION_DIR', Path(temp)), \
+                    patch.object(renew.asyncio, 'sleep', new=AsyncMock()), \
+                    contextlib.redirect_stdout(output):
+                keeper = renew.ZapKeepAlive('fixture@example.test', 'fixture-password')
+                keeper.page = page
+                keeper.solver = None
+                self.assertFalse(await keeper.login())
+            self.assertIn('HTTP 422 响应类别：未识别（原文已隐藏）', output.getvalue())
+            self.assertNotIn('PRIVATE-123', output.getvalue())
+            self.assertNotIn('private response', output.getvalue())
+
     async def test_failed_ajax_login_reports_safe_status_and_visible_errors(self):
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
@@ -178,4 +250,5 @@ class LoginBrowserTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
 

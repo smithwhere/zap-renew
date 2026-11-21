@@ -174,6 +174,7 @@ class LoginDiagnostics:
         self.action_path = urlparse(action_url).path or '/'
         self.login_requests = {}
         self.other_requests = {}
+        self.login_422_responses = []
         self.errors = set()
         self.read_page = False
 
@@ -197,6 +198,8 @@ class LoginDiagnostics:
         for target in (self.login_requests, self.other_requests):
             if response.request in target:
                 target[response.request] = f'HTTP {response.status}'
+                if target is self.login_requests and response.status == 422:
+                    self.login_422_responses.append(response)
 
     def on_failure(self, request):
         for target in (self.login_requests, self.other_requests):
@@ -224,6 +227,63 @@ class LoginDiagnostics:
             known = [phrase for phrase in self.PUBLIC_ERRORS if phrase.lower() in message]
             self.errors.update(known or ['其他可见错误（原文已隐藏）'])
 
+    @staticmethod
+    def classify_error_payload(payload):
+        """Inspect only error-related fields and emit fixed labels, never untrusted values."""
+        allowed = {'error', 'errors', 'message', 'messages', 'msg', 'reason',
+                   'detail', 'details', 'description', 'error_description',
+                   'code', 'errorcode', 'error_code', 'field', 'fields'}
+        values = []
+
+        def visit(value, inside_error=False, depth=0):
+            if depth > 8 or len(values) >= 100:
+                return
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    normalized = str(key).lower()
+                    if normalized in allowed or inside_error:
+                        if inside_error and normalized not in allowed:
+                            values.append(normalized)
+                        visit(child, inside_error or normalized in {'error', 'errors'}, depth + 1)
+            elif isinstance(value, list):
+                for child in value[:100]:
+                    visit(child, inside_error, depth + 1)
+            elif isinstance(value, str):
+                values.append(value[:2048].lower())
+
+        visit(payload)
+        text = ' '.join(values)
+        categories = []
+        for label, markers in (
+            ('验证码相关', ('captcha', 'recaptcha', 'turnstile', 'human verification')),
+            ('账号或密码相关', ('credential', 'password', 'username', 'e-mail', 'email')),
+            ('请求频率限制相关', ('rate limit', 'rate_limit', 'too many', 'throttle')),
+            ('账号状态相关', ('account locked', 'account_locked', 'account disabled', 'account_disabled')),
+            ('会话或 CSRF 相关', ('csrf', 'session expired', 'session_expired')),
+            ('缺少字段或表单校验相关', ('required', 'missing field', 'validation')),
+        ):
+            if any(marker in text for marker in markers):
+                categories.append(label)
+        return '、'.join(categories) if categories else '未识别（原文已隐藏）'
+
+    async def report_422(self):
+        for response in self.login_422_responses:
+            try:
+                length = response.headers.get('content-length')
+                if length and int(length) > 65536:
+                    category = '响应过大（原文已隐藏）'
+                else:
+                    body = await asyncio.wait_for(response.body(), timeout=5)
+                    if len(body) > 65536:
+                        category = '响应过大（原文已隐藏）'
+                    else:
+                        category = self.classify_error_payload(json.loads(body))
+            except (ValueError, TypeError, UnicodeDecodeError):
+                category = '非 JSON 或无法识别（原文已隐藏）'
+            except Exception:
+                category = '无法读取（原文已隐藏）'
+            Logger.log('登录诊断', f'HTTP 422 响应类别：{category}')
+
     async def finish(self):
         await self.read_errors()
         self.page.remove_listener('request', self.on_request)
@@ -233,6 +293,7 @@ class LoginDiagnostics:
                               ('其他同源 POST', self.other_requests)):
             responses = '、'.join(target.values()) or '无'
             Logger.log('登录诊断', f'{label}：{len(target)} 次；响应：{responses}')
+        await self.report_422()
         errors = '、'.join(sorted(self.errors)) or ('未观察到' if self.read_page else '无法读取')
         Logger.log('登录诊断', f'页面可见错误提示：{errors}')
 
@@ -857,5 +918,6 @@ async def main():
 if __name__ == '__main__':
     result = asyncio.run(main())
     exit(0 if result else 1)
+
 
 
