@@ -41,6 +41,10 @@ GitHub 定时触发可能延迟；周三检查也是 GitHub 定时任务，不�
 邮件显示“服务器接受”表示 SMTP 已接受投递，最终到达收件箱由邮件服务商处理。
 保活成功表示已访问并刷新 VPS 页面，不保证服务商已延长 Lifetime VPS 有效期。
 
+如果工作流提交登录后仍未进入客户区，请查看 `Run renew script` 中的 HTTP 状态和登录提示。
+可以从 [ZAP-Hosting 官方登录页](https://zap-hosting.com/en/login) 选择 **Open Classic Panel**，
+在浏览器里手动登录并打开目标 VPS，按面板提示完成验证或活动确认。
+
 ### Cloudflare 验证
 
 脚本沿用上游的 CDP 鼠标事件方式，定位实际 Turnstile iframe（包括 closed Shadow DOM），
