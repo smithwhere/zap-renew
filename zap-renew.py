@@ -356,6 +356,17 @@ class YesCaptchaSolver:
         Logger.log("验证码", "验证码已解决!", "OK")
         return token
 
+    def solve_turnstile(self, site_key: str, page_url: str) -> str:
+        task_id = self._submit_task({
+            'type': 'TurnstileTaskProxyless',
+            'websiteURL': page_url,
+            'websiteKey': site_key,
+        })
+        token = self._get_solution(task_id).get('token')
+        if not isinstance(token, str) or not token:
+            raise RuntimeError('YesCaptcha 未返回 Turnstile token')
+        return token
+
 
 class ZapKeepAlive:
     def __init__(self, email: str, password: str):
@@ -567,15 +578,14 @@ class ZapKeepAlive:
             Logger.log("登录", "找不到密码输入框", "ERROR")
             return False
         
-        # Classic Panel now prefers its own Turnstile widget when present.
-        # Let the page obtain a token normally; never substitute a reCAPTCHA token.
+        # Classic Panel uses Turnstile when the login form contains its widget.
         turnstile = await login_form.query_selector(
             '.inline-login-turnstile, input[name="cf-turnstile-response"]'
         )
         if turnstile:
             Logger.log('登录', '等待登录表单的 Turnstile 验证...', 'WAIT')
             verified = False
-            for _ in range(30):
+            for _ in range(5):
                 verified = await login_form.evaluate('''form => {
                     const response = form.querySelector('[name="cf-turnstile-response"]');
                     return Boolean(response && response.value);
@@ -584,9 +594,43 @@ class ZapKeepAlive:
                     break
                 await asyncio.sleep(2)
             if not verified:
-                Logger.log('登录', 'Turnstile 未返回验证结果，停止登录', 'ERROR')
-                return False
-            Logger.log('登录', 'Turnstile 已返回验证结果', 'OK')
+                if not self.solver:
+                    Logger.log('登录', 'Turnstile 未返回验证结果，且未配置 YesCaptcha', 'ERROR')
+                    return False
+                widget = await login_form.evaluate('''form => {
+                    const vm = form.__vue__;
+                    return {sitekey: vm?.turnstileSitekey || '', widgetId: vm?.turnstileWidgetId ?? null,
+                            ready: typeof window.turnstile?.getResponse === 'function'};
+                }''')
+                if not widget['sitekey'] or widget['widgetId'] is None or not widget['ready']:
+                    Logger.log('登录', '无法识别登录表单的 Turnstile 控件，停止登录', 'ERROR')
+                    return False
+                try:
+                    Logger.log('验证码', '请求 YesCaptcha 处理登录表单的 Turnstile...', 'WAIT')
+                    token = await asyncio.to_thread(self.solver.solve_turnstile,
+                                                    widget['sitekey'], self.page.url)
+                    await login_form.evaluate('''(form, data) => {
+                        const field = form.querySelector('[name="cf-turnstile-response"]');
+                        if (field) field.value = data.token;
+                        const original = window.turnstile.getResponse;
+                        const widgetId = data.widgetId;
+                        const replacement = function(id) {
+                            if (id === widgetId) return data.token;
+                            return original.apply(this, arguments);
+                        };
+                        form.__zapRestoreTurnstile = () => {
+                            if (window.turnstile.getResponse === replacement)
+                                window.turnstile.getResponse = original;
+                            delete form.__zapRestoreTurnstile;
+                        };
+                        window.turnstile.getResponse = replacement;
+                    }''', {'token': token, 'widgetId': widget['widgetId']})
+                    Logger.log('登录', '已准备 Turnstile 验证结果', 'OK')
+                except Exception as error:
+                    Logger.log('登录', f'Turnstile 处理失败: {type(error).__name__}', 'ERROR')
+                    return False
+            else:
+                Logger.log('登录', 'Turnstile 已返回验证结果', 'OK')
         elif self.solver:
             # Older reCAPTCHA forms still use the existing solver.
             Logger.log("登录", "等待 reCAPTCHA 结果...", "WAIT")
@@ -675,6 +719,10 @@ class ZapKeepAlive:
             return False
         finally:
             await diagnostics.finish()
+            try:
+                await login_form.evaluate('form => form.__zapRestoreTurnstile?.()')
+            except Exception:
+                pass
     
     async def visit_vps_detail(self) -> bool:
         if VPS_URL:
@@ -938,6 +986,7 @@ async def main():
 if __name__ == '__main__':
     result = asyncio.run(main())
     exit(0 if result else 1)
+
 
 
 

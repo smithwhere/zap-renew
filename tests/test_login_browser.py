@@ -12,6 +12,53 @@ from test_renew import renew
 
 
 class LoginBrowserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_yescaptcha_token_reaches_turnstile_component_submission(self):
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            self.addAsyncCleanup(browser.close)
+            page = await browser.new_page()
+            submitted = []
+
+            async def route_request(route):
+                if route.request.method == 'POST':
+                    submitted.append(route.request.post_data)
+                    await route.fulfill(content_type='application/json', body='{}')
+                else:
+                    await route.fulfill(content_type='text/html', body='''
+                        <title>Login</title><form class="inline-login">
+                          <input name="username" autocomplete="username"><input type="password">
+                          <div class="inline-login-turnstile"><input type="hidden"
+                            id="cf-chl-widget-login1_response" name="cf-turnstile-response"></div>
+                          <button type="submit">Login</button>
+                        </form><script>
+                        const form = document.querySelector('form');
+                        form.__vue__ = {turnstileWidgetId: 'login1', turnstileSitekey: '0xfixture'};
+                        window.turnstile = {getResponse: id => id === 'other' ? 'other-token' : ''};
+                        form.onsubmit = event => {
+                          event.preventDefault();
+                          const token = window.turnstile.getResponse(form.__vue__.turnstileWidgetId);
+                          const other = window.turnstile.getResponse('other');
+                          fetch('/interface/customer/_ajax/json_login.php', {
+                            method:'POST', body: new URLSearchParams({token, other})
+                          });
+                        };
+                        </script>
+                    ''')
+            await page.route('**/*', route_request)
+            output = io.StringIO()
+            with TemporaryDirectory() as temp, \
+                    patch.object(renew, 'SESSION_DIR', Path(temp)), \
+                    patch.object(renew.asyncio, 'sleep', new=AsyncMock()), \
+                    contextlib.redirect_stdout(output):
+                keeper = renew.ZapKeepAlive('fixture@example.test', 'fixture-password')
+                keeper.page = page
+                keeper.solver = unittest.mock.Mock()
+                keeper.solver.solve_turnstile.return_value = 'private-fixture-token'
+                self.assertFalse(await keeper.login())
+                keeper.solver.solve_turnstile.assert_called_once_with('0xfixture', renew.LOGIN_URL)
+            self.assertEqual(submitted, ['token=private-fixture-token&other=other-token'])
+            self.assertNotIn('private-fixture-token', output.getvalue())
+
     async def test_turnstile_login_uses_native_token_not_recaptcha_solver(self):
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
@@ -314,6 +361,7 @@ class LoginBrowserTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
 
 
 

@@ -5,6 +5,17 @@ from test_renew import renew
 
 
 class YesCaptchaTests(unittest.TestCase):
+    def test_turnstile_task_uses_widget_api_and_returns_token(self):
+        responses = [{'errorId': 0, 'taskId': 'fixture-task'},
+                     {'errorId': 0, 'status': 'ready', 'solution': {'token': 'fixture-turnstile-token'}}]
+        with patch.object(renew.requests, 'post', side_effect=[Mock(json=Mock(return_value=r)) for r in responses]) as post:
+            solver = renew.YesCaptchaSolver('fixture-key')
+            self.assertEqual(solver.solve_turnstile('0xfixture', 'https://panel.example.test/'),
+                             'fixture-turnstile-token')
+        self.assertEqual(post.call_args_list[0].kwargs['json']['task']['type'], 'TurnstileTaskProxyless')
+        self.assertEqual(post.call_args_list[0].kwargs['json']['task']['websiteKey'], '0xfixture')
+        self.assertEqual(post.call_args_list[0].kwargs['json']['task']['websiteURL'], 'https://panel.example.test/')
+
     def test_unsupported_browser_proxy_is_rejected_without_exposing_credentials(self):
         for proxy in ['socks5://user:private-password@proxy.example.test:1080',
                       'ftp://proxy.example.test:8080', 'http://proxy.example.test:bad-port']:
@@ -47,3 +58,4 @@ class YesCaptchaTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
