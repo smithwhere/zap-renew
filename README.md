@@ -5,9 +5,10 @@
 ## 功能
 
 - 支持多账号批量处理
-- 登录时记录脱敏诊断，遇到人机验证就停止
-- 确认目标 VPS 概览后停留并刷新
-- 支持邮件通知
+- 自动解决 reCAPTCHA 验证 (需要 YesCaptcha)
+- 自动处理 Cloudflare 验证
+- 会话持久化
+- Telegram 通知支持
 
 ## GitHub Actions 使用
 
@@ -16,11 +17,13 @@
 | Secret 名称 | 内容 |
 |-------------|------|
 | `ZAP_ACCOUNT` | `邮箱:密码`，多账号用逗号分隔 |
+| `YESCAPTCHA_API_KEY` | 登录表单 reCAPTCHA 使用的 YesCaptcha API 密钥 |
+| `ZAP_PROXY_URL` | 可选浏览器代理地址；不配置时直接连接 |
 | `SMTP_USERNAME` | QQ 发件邮箱 |
 | `SMTP_PASSWORD` | QQ 邮箱 SMTP 服务授权码 |
 | `SMTP_TO` | 通知收件邮箱 |
 
-账号和密码仅保存到 Secrets，不要提交到公开仓库。
+账号、密码和 API 密钥仅保存到 Secrets，不要提交到公开仓库。
 工作流直接将 Secrets 传入进程环境，不生成包含凭据的文件，也不缓存登录会话。
 在 Actions 中启用工作流后，选择 **ZAP Renew → Run workflow** 可手动运行。
 定时任务为每周一北京时间 08:00；每周三北京时间 08:00 检查本周周一定时任务的执行结果，
@@ -31,29 +34,30 @@
 周三跳过时不会登录、安装浏览器或发送保活结果邮件，原因可在 Actions 日志中查看。
 工作流使用自动提供的 `GITHUB_TOKEN` 和 `actions: read` 权限查询记录，无需新增 Secret。
 GitHub 定时触发可能延迟；周三检查也是 GitHub 定时任务，不保证在 08:00 准时启动。
-常规 `renew` 使用普通 Chromium 登录 Classic Panel (`legacy.zap-hosting.com`)。
-遇到人机验证时停止并记录原因。登录成功后等待 3 秒，访问指定 VPS 详情页、停留 10 秒并刷新。
-Cookie 提示出现时选择 **Only necessary**。
+首次登录及验证码解决需要实际运行验证。
+当前工作流使用 Classic Panel (`legacy.zap-hosting.com`)，登录成功后等待 3 秒，
+访问指定 VPS 详情页、停留 10 秒并刷新。Cookie 提示出现时自动选择 **Accept all**。
 成功与失败结果均通过 QQ SMTP SSL (465) 发邮件。
 邮件显示“服务器接受”表示 SMTP 已接受投递，最终到达收件箱由邮件服务商处理。
 保活成功表示已访问并刷新 VPS 页面，不保证服务商已延长 Lifetime VPS 有效期。
 
-如果工作流提交登录后仍未进入客户区，请查看 `Run renew script` 中的 HTTP 状态和登录提示。
-可以从 [ZAP-Hosting 官方登录页](https://zap-hosting.com/en/login) 选择 **Open Classic Panel**，
-在浏览器里手动登录并打开目标 VPS，按面板提示完成验证或活动确认。
+### Cloudflare 验证
 
-### 实站验证
+脚本沿用上游的 CDP 鼠标事件方式，定位实际 Turnstile iframe（包括 closed Shadow DOM），
+不会按整个页面容器的固定位置点击，也不会在同一控件验证过程中反复点击。
+浏览器使用原生 User-Agent，先等待页面自动验证，再在需要时点击实际控件。
+Cloudflare 验证始终在浏览器中处理，不调用 YesCaptcha API，也不注入第三方返回的验证 Cookie。
+即使配置了 API 密钥或代理，也不会创建 Cloudflare 付费任务。
+最后一次点击后会重新检查页面，验证失败仍会终止任务；本地测试通过不保证每次实站验证都能通过。
+登录表单的 reCAPTCHA 是独立验证码，仍通过 `YESCAPTCHA_API_KEY` 处理。
 
-手动运行 **ZAP Renew** 时启用 `verify_live`。验证使用 `ZAP_ACCOUNT` 和普通 Chromium，
-遇到验证码就停止，并在 **Verify live login and VPS page** 日志里指出阶段。只有进入客户区并打开
-指定的 VPS 概览后，验证才会通过。两种作业的登录诊断均记录登录页 HTTP 状态、
-Login 点击状态，以及点击期间和之后主页面发出的同源 POST 数量和响应状态。
-表单提交与 `json_login.php` 异步提交均归到登录请求，后台请求另行统计。
-页面可见错误仅输出已知的公共提示短语，其他提示统一隐藏原文。点击前停止时，提交请求和响应标为“不适用”。
-验证过程无需 YesCaptcha、代理或邮件配置。
+代理格式为 `http://username:password@host:port`、`https://host:port` 或 `socks5://host:port`。
+带认证的 SOCKS5 不受支持。代理只用于浏览器连接，不是 Cloudflare 验证的必需配置。
+代理凭据中的特殊字符应进行 URL 编码。
 
 本地检查：安装依赖并执行 `playwright install chromium` 后，运行
-`python -m unittest discover -s tests -v`。浏览器测试使用本地响应夹具，不发送真实凭据。
+`python -m unittest discover -s tests -v`。浏览器测试使用本地响应夹具，
+不会发送真实账号或创建真实 YesCaptcha 付费任务。
 
 ## 青龙面板使用
 
@@ -73,7 +77,7 @@ Login 点击状态，以及点击期间和之后主页面发出的同源 POST �
 | 变量名 | 说明 | 示例 |
 |--------|------|------|
 | `ZAP_ACCOUNT` | 账号配置 | `邮箱:密码,邮箱2:密码2` |
-| `ZAP_VPS_URL` | Classic Panel VPS 概览地址 | `https://legacy.zap-hosting.com/en/customer/vserver/show/123/overview/` |
+| `YESCAPTCHA_API_KEY` | YesCaptcha API密钥 | `your_api_key` |
 | `STAY_DURATION` | 停留时间(秒) | `10` |
 | `TELEGRAM_BOT_TOKEN` | TG机器人Token | (可选) |
 | `TELEGRAM_CHAT_ID` | TG聊天ID | (可选) |
@@ -91,24 +95,23 @@ requests
 
 ### 4. 系统依赖
 
-在容器中安装 Chromium 和它的系统依赖：
+需要在容器中安装 xvfb:
 
 ```bash
-playwright install --with-deps chromium
+apt-get update && apt-get install -y xvfb xauth
 ```
 
 ### 5. 定时任务
 
 每周一早上执行一次（面板时区设为 Asia/Shanghai）:
 - 定时规则: `0 8 * * 1` (每周一 08:00)
-- 运行命令为 `python3 zap-renew.py --renew`
 
 ## 手动运行
 
 ```bash
 export ZAP_ACCOUNT='your@email.com:password'
-export ZAP_VPS_URL='https://legacy.zap-hosting.com/en/customer/vserver/show/123/overview/'
-python3 zap-renew.py --renew
+export YESCAPTCHA_API_KEY="your_api_key"
+xvfb-run python3 zap-renew.py
 ```
 
 脚本读取系统环境变量，兼容旧名称 `ACCOUNTS_ZAP` 和 `ACCOUNTS`，优先使用 `ZAP_ACCOUNT`。
