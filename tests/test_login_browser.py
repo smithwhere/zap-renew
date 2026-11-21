@@ -12,6 +12,70 @@ from test_renew import renew
 
 
 class LoginBrowserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_turnstile_login_uses_native_token_not_recaptcha_solver(self):
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            self.addAsyncCleanup(browser.close)
+            page = await browser.new_page()
+            submitted = []
+
+            async def route_request(route):
+                if route.request.method == 'POST':
+                    submitted.append(route.request.post_data)
+                    await route.fulfill(content_type='text/html', body='<title>Dashboard</title>')
+                else:
+                    await route.fulfill(content_type='text/html', body='''
+                        <title>Login</title><form class="inline-login" method="post" action="/en/customer/home/">
+                          <input name="username" autocomplete="username"><input name="password" type="password">
+                          <div class="inline-login-turnstile"><input type="hidden"
+                            name="cf-turnstile-response" value="native-test-token"></div>
+                          <button type="submit">Login</button>
+                        </form>
+                    ''')
+            await page.route('**/*', route_request)
+            with TemporaryDirectory() as temp, \
+                    patch.object(renew, 'SESSION_DIR', Path(temp)), \
+                    patch.object(renew.asyncio, 'sleep', new=AsyncMock()), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                keeper = renew.ZapKeepAlive('fixture@example.test', 'fixture-password')
+                keeper.page = page
+                keeper.solver = unittest.mock.Mock()
+                self.assertTrue(await keeper.login())
+                keeper.solver.solve.assert_not_called()
+            self.assertEqual(len(submitted), 1)
+            self.assertIn('cf-turnstile-response=native-test-token', submitted[0])
+
+    async def test_turnstile_login_does_not_submit_without_native_token(self):
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            self.addAsyncCleanup(browser.close)
+            page = await browser.new_page()
+            submitted = []
+
+            async def route_request(route):
+                if route.request.method == 'POST':
+                    submitted.append(True)
+                await route.fulfill(content_type='text/html', body='''
+                    <title>Login</title><form class="inline-login" method="post">
+                      <input name="username" autocomplete="username"><input type="password">
+                      <div class="inline-login-turnstile"><input type="hidden" name="cf-turnstile-response"></div>
+                      <button type="submit">Login</button>
+                    </form>
+                ''')
+            await page.route('**/*', route_request)
+            output = io.StringIO()
+            with TemporaryDirectory() as temp, \
+                    patch.object(renew, 'SESSION_DIR', Path(temp)), \
+                    patch.object(renew.asyncio, 'sleep', new=AsyncMock()), \
+                    contextlib.redirect_stdout(output):
+                keeper = renew.ZapKeepAlive('fixture@example.test', 'fixture-password')
+                keeper.page = page
+                keeper.solver = unittest.mock.Mock()
+                self.assertFalse(await keeper.login())
+                keeper.solver.solve.assert_not_called()
+            self.assertFalse(submitted)
+            self.assertIn('Turnstile', output.getvalue())
+
     async def test_422_json_error_is_categorized_without_exposing_response(self):
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
@@ -250,5 +314,6 @@ class LoginBrowserTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
 
 
