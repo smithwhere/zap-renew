@@ -63,8 +63,11 @@ class LoginDiagnostics:
         # Browser workers and embedded frames are outside the login form.
         if request.service_worker or request.frame != self.page.main_frame:
             return
-        matches_form = (urlparse(request.url).path or '/') == self.action_path
-        requests = self.requests if matches_form else self.other_requests
+        path = urlparse(request.url).path or '/'
+        is_login = path == self.action_path or (
+            request.resource_type in ('fetch', 'xhr') and path.endswith('/json_login.php')
+        )
+        requests = self.requests if is_login else self.other_requests
         requests[request] = '观察结束时尚无响应'
 
     def on_response(self, response):
@@ -98,7 +101,7 @@ class LoginDiagnostics:
             self.page.remove_listener('response', self.on_response)
             self.page.remove_listener('requestfailed', self.on_failure)
         print(f'[登录诊断] Login 点击：{self.click}', flush=True)
-        for label, requests in (('表单路径 POST', self.requests), ('其他同源 POST', self.other_requests)):
+        for label, requests in (('登录提交 POST', self.requests), ('其他同源 POST', self.other_requests)):
             if self.action_path is None:
                 detail = '不适用；响应：不适用'
             else:

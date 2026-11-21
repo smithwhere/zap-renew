@@ -59,7 +59,7 @@ class LiveVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.submitted)
         self.assertTrue(self.visited_vps)
         self.assertIn('Login 点击：已完成', log.getvalue())
-        self.assertIn('表单路径 POST：1 次；响应：HTTP 200', log.getvalue())
+        self.assertIn('登录提交 POST：1 次；响应：HTTP 200', log.getvalue())
 
     async def test_stops_before_filling_captcha_protected_form(self):
         page = await self.setUp_browser('<div class="g-recaptcha" hidden></div>')
@@ -75,7 +75,7 @@ class LiveVerificationTests(unittest.IsolatedAsyncioTestCase):
                 await verify_vps(page, 'fixture@example.test', 'fixture-password', VPS_URL)
         self.assertIn('登录页响应：HTTP 200', log.getvalue())
         self.assertIn('Login 点击：未尝试', log.getvalue())
-        self.assertIn('表单路径 POST：不适用；响应：不适用', log.getvalue())
+        self.assertIn('登录提交 POST：不适用；响应：不适用', log.getvalue())
         self.assertEqual(await page.locator('input[name="username"]').input_value(), '')
         self.assertFalse(self.submitted)
 
@@ -91,7 +91,7 @@ class LiveVerificationTests(unittest.IsolatedAsyncioTestCase):
                 await verify_vps(page, 'fixture@example.test', 'fixture-password', VPS_URL)
         output = log.getvalue()
         self.assertIn('Login 点击：已完成', output)
-        self.assertIn('表单路径 POST：0 次；响应：无', output)
+        self.assertIn('登录提交 POST：0 次；响应：无', output)
         self.assertIn('Invalid credentials', output)
         self.assertIn('其他可见错误（原文已隐藏）', output)
         for private in ('fixture@example.test', 'fixture-password', 'PRIVATE-REFERENCE-123', 'Too many attempts'):
@@ -104,21 +104,21 @@ class LiveVerificationTests(unittest.IsolatedAsyncioTestCase):
               document.forms[0].onsubmit = async event => {
                 event.preventDefault();
                 await fetch('/metrics', {method: 'POST'});
-                await fetch(document.forms[0].action, {method: 'POST'});
+                  await fetch('/interface/login/json_login.php?fixture=private-reference', {method: 'POST'});
                 document.querySelector('.alert-danger').textContent = 'Too many attempts: fixture-password';
               };
             </script>
         ''')
         await page.route('**/metrics', lambda route: route.fulfill(status=204))
-        await page.route(DASHBOARD_URL, lambda route: route.fulfill(status=401, body='private body'))
+        await page.route('**/json_login.php?*', lambda route: route.fulfill(status=401, body='private body'))
         with redirect_stdout(io.StringIO()) as log, patch('scripts.verify_live.LOGIN_RESULT_TIMEOUT', 1, create=True):
             with self.assertRaisesRegex(LiveVerificationError, '未进入'):
                 await verify_vps(page, 'fixture@example.test', 'fixture-password', VPS_URL)
         output = log.getvalue()
-        self.assertIn('表单路径 POST：1 次；响应：HTTP 401', output)
+        self.assertIn('登录提交 POST：1 次；响应：HTTP 401', output)
         self.assertIn('其他同源 POST：1 次；响应：HTTP 204', output)
         self.assertIn('Too many attempts', output)
-        for private in ('private body', 'fixture-password', '/metrics'):
+        for private in ('private body', 'fixture-password', '/metrics', 'private-reference', 'json_login.php'):
             self.assertNotIn(private, output)
 
     async def test_aborted_post_is_reported_as_a_request_without_an_http_status(self):
@@ -134,7 +134,7 @@ class LiveVerificationTests(unittest.IsolatedAsyncioTestCase):
         with redirect_stdout(io.StringIO()) as log, patch('scripts.verify_live.LOGIN_RESULT_TIMEOUT', 1, create=True):
             with self.assertRaisesRegex(LiveVerificationError, '未进入'):
                 await verify_vps(page, 'fixture@example.test', 'fixture-password', VPS_URL)
-        self.assertIn('表单路径 POST：1 次；响应：请求失败（无 HTTP 响应）', log.getvalue())
+        self.assertIn('登录提交 POST：1 次；响应：请求失败（无 HTTP 响应）', log.getvalue())
 
     async def test_stops_at_cloudflare_challenge(self):
         page = await self.setUp_browser({

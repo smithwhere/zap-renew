@@ -50,7 +50,8 @@ GitHub 定时触发可能延迟；周三检查也是 GitHub 定时任务，不�
 手动运行 **ZAP Renew** 时启用 `verify_live`。验证使用 `ZAP_ACCOUNT` 和普通 Chromium，
 遇到验证码就停止，并在 **Verify live login and VPS page** 日志里指出阶段。
 只有进入 Classic Panel 客户区并打开指定的 VPS 概览后，验证才会通过。登录诊断记录登录页 HTTP 状态、
-Login 点击状态，以及点击期间和之后主页面发出的同源 POST 数量和响应状态。表单路径与其他路径分别统计。
+Login 点击状态，以及点击期间和之后主页面发出的同源 POST 数量和响应状态。
+表单提交与 `json_login.php` 异步提交均归到登录请求，后台请求另行统计。
 页面可见错误仅输出已知的公共提示短语，其他提示统一隐藏原文。点击前停止时，提交请求和响应标为“不适用”。
 验证过程无需 YesCaptcha、代理或邮件配置。
 
