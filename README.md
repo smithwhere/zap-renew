@@ -45,6 +45,13 @@ GitHub 定时触发可能延迟；周三检查也是 GitHub 定时任务，不�
 可以从 [ZAP-Hosting 官方登录页](https://zap-hosting.com/en/login) 选择 **Open Classic Panel**，
 在浏览器里手动登录并打开目标 VPS，按面板提示完成验证或活动确认。
 
+### 实站验证
+
+手动运行 **ZAP Renew** 时启用 `verify_live`。验证使用 `ZAP_ACCOUNT` 和普通 Chromium，
+遇到验证码就停止，并在 **Verify live login and VPS page** 日志里指出阶段。
+只有进入 Classic Panel 客户区并打开指定的 VPS 概览后，验证才会通过。日志仅记录阶段和结果，
+验证过程无需 YesCaptcha、代理或邮件配置。
+
 ### Cloudflare 验证
 
 脚本沿用上游的 CDP 鼠标事件方式，定位实际 Turnstile iframe（包括 closed Shadow DOM），

@@ -26,6 +26,7 @@ import time
 import requests
 import smtplib
 import ssl
+import sys
 from email.message import EmailMessage
 from urllib.parse import urlparse, unquote
 from pathlib import Path
@@ -790,6 +791,11 @@ async def main():
 
 
 if __name__ == '__main__':
-    result = asyncio.run(main())
-    exit(0 if result else 1)
+    if sys.argv[1:] == ['--verify-live']:
+        from scripts.verify_live import run
+
+        result = asyncio.run(run(parse_accounts(ACCOUNTS_STR), VPS_URL))
+    else:
+        result = asyncio.run(main())
+    raise SystemExit(0 if result else 1)
 
